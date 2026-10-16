@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<ModInfo xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <ModName>NBC Campaign Bridge</ModName>
+  <ModDescription>Connects local single-player skirmishes to the external NBC campaign proof of concept.</ModDescription>
+  <ModVer>0.1.0</ModVer>
+  <Assemblies><string>NBCBridge.dll</string></Assemblies>
+  <GameVer>0.6.2</GameVer>
+</ModInfo>

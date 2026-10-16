@@ -1,0 +1,8 @@
+.tools/
+.research/
+data/
+build/
+__pycache__/
+*.pyc
+*.log
+
