@@ -36,7 +36,7 @@ Requirements: Windows, Python 3.10+ with Tkinter, NEBULOUS: Fleet Command, and S
    ```
 
 2. Start NEBULOUS normally. Open **Mods**, enable **NBC Campaign Bridge**, apply the change, and return to the main menu. This is a one-time step. A running game must be restarted after updating the bridge DLL. Returning to the main menu is enough for the bridge to export the fitting catalogue.
-3. Double-click **Start Campaign.cmd**, or run `python app.py`. The app opens on the main menu with **Continue**, **New Campaign**, **Load Campaign** and **Exit**. **Continue** is shown only when an existing campaign is detected. Choose **New Campaign** to set a campaign name, commander, faction and starter fleet; the starter fleet and its loadouts are copied into the new campaign. Replacing an existing campaign backs up `campaign.json` and its top-level fleet files under `data/campaign-backups` first. **Load Campaign** is reserved for the next roadmap step.
+3. Double-click **Start Campaign.cmd**, or run `python app.py`. The app opens on the main menu with **Continue**, **New Campaign**, **Load Campaign** and **Exit**. **Continue** is shown only when the last-played campaign is valid. **New Campaign** creates an independent save under `data/campaigns/<id>/`, with its own fleet, inventory, credits, battle history and pending operations. The existing `data/campaign.json` save remains available as the legacy **root** campaign. **Load Campaign** lists saved campaigns with commander, faction, credits, fleet size, last-played time and save status; select one and choose **Load Selected**. A campaign with a pending battle or refit must be finished or cancelled before another campaign can be loaded. The open campaign is locked, and the lock moves with you when you switch saves.
 4. On **Fleet**, load an installed fleet or import a `.fleet` file. Rename ships or change hull numbers. Use the native refit workflow above to change equipment. Original fleet files are preserved.
 5. On **Battle**, choose an enemy faction and target point budget, then **Generate enemy**. The app fits new ships and loadouts from the native catalogue. The actual total may differ from the target.
 6. Click **Run battle → NEBULOUS**. The game opens if necessary. If it is already running, return to its main menu. The bridge creates a local skirmish, assigns your fleet and one AI enemy, validates settings and launches it. Deploy your ships and play normally.
@@ -52,6 +52,7 @@ python app.py --game 'D:\SteamLibrary\steamapps\common\Nebulous'
 
 - Native `.fleet` import/export, names, hull numbers, fleet composition, equipment substitutions and complete loadouts.
 - Persistent local app saves and per-battle archives. Closing and reopening the app retains the pending battle and its eventual result.
+- Multiple independent campaigns selected from the main menu, with metadata, last-played tracking and corrupt-save reporting.
 - Offline random enemy ships and component loadouts generated from native stock fitting data. v1 supports direct-fire weapons and bulk magazines; missiles, hangars and craft are excluded.
 - Automatic handoff to a real local skirmish and automatic capture of a full native after-action report.
 - Report records include a battle ID and player ship IDs; importing a completed battle twice is prevented.
@@ -67,6 +68,7 @@ The bridge was built against the local NEBULOUS 0.6.2.6 installation. Rebuild ag
 ```text
 app.py                       Native Tkinter UI
 nbc/core.py                  XML editing, fleet/campaign state and bridge exchange
+nbc/library.py               Campaign discovery, metadata and last-played tracking
 nbc/fitting.py               Native catalogue parser and offline ship fitter
 nbc/generation.py            Candidate selection and enemy persistence
 nbc/refit.py                 Inventory, draft validation and atomic refit confirmation
@@ -79,10 +81,12 @@ bridge/lib/                  Pinned Harmony library and MIT license
 bridge/ModInfo.xml           Local mod manifest
 scripts/Build Bridge.ps1     Compile against installed game libraries
 Install Bridge.ps1          Install only this mod's files
-data/player.fleet           Working player fleet (ignored by Git)
-data/enemy.fleet            Generated enemy (ignored by Git)
-data/campaign.json          Campaign metadata, credits, battle history and ship status
-data/campaign-backups/      Top-level campaign files backed up before replacement
+data/player.fleet           Legacy root campaign's working player fleet (ignored by Git)
+data/enemy.fleet            Legacy root campaign's generated enemy (ignored by Git)
+data/campaign.json          Legacy root campaign metadata, credits, battle history and ship status
+data/campaigns/<id>/         Independent campaign saves with their own state and archives
+data/campaigns.json         Last-played campaign pointer
+data/campaign-backups/      Top-level files backed up when a save is explicitly replaced
 data/battles/<id>/           Input fleets, native report.xml and result.xml
 data/refits/<id>/            Original fleet, revision inputs and exported drafts
 tests/fixtures/              Synthetic fitting catalogue used by offline tests
@@ -99,7 +103,7 @@ The app exports generated fleets into `NEBULOUS/Saves/Fleets/NBC-POC/`. The file
 
 The bridge refuses modified input files after a request is submitted and rejects designs with missing component assets. Player and enemy inputs are archived before battle. Keep ship names unique within each fleet, because native reports identify ships by name; the bridge accounts for the player's fleet prefix (for example `ANS`) when mapping those names back to their fleet GUIDs. No game assemblies or extracted game assets are checked into this repository.
 
-Refitting uses `refit-request.xml`, `refit-status.xml` and `refit-cancel.xml` in the same exchange directory. Each request has a session GUID, revision, hashed input and a shared supply equal to original installed components plus owned spares. `ready-<revision>.xml` is published after `draft-<revision>.fleet` and includes its hash and socket labels. The app validates the fleet against the original roster and reconciles component quantities again before confirmation. Only one app window may edit a given save directory.
+Refitting uses `refit-request.xml`, `refit-status.xml` and `refit-cancel.xml` in the same exchange directory. Each request has a session GUID, revision, hashed input and a shared supply equal to original installed components plus owned spares. `ready-<revision>.xml` is published after `draft-<revision>.fleet` and includes its hash and socket labels. The app validates the fleet against the original roster and reconciles component quantities again before confirmation. Only one app window may edit a given save directory; different campaigns can be opened in separate windows.
 
 For a separate fitting fixture without replacing the default save:
 
@@ -135,6 +139,6 @@ python -m unittest discover -s tests -v
 & '.\scripts\Build Bridge.ps1'
 ```
 
-Tests cover XML preservation, ship identities, compatible/incompatible edits, socket fitting, catalogue parsing, ammunition loading, EWar role classification, deterministic offline generation, budget selection, battle locking, cancellation, result matching, duplicate import prevention and round-trips of installed fleet files when available. Live game validation is a separate check; these tests use a synthetic fitting catalogue and, when present, the locally exported real catalogue. They do not simulate the Unity engine.
+Tests cover XML preservation, ship identities, compatible/incompatible edits, socket fitting, catalogue parsing, ammunition loading, EWar role classification, deterministic offline generation, budget selection, campaign discovery, last-played tracking, corrupt-save reporting, battle locking, cancellation, result matching, duplicate import prevention and round-trips of installed fleet files when available. Live game validation is a separate check; these tests use a synthetic fitting catalogue and, when present, the locally exported real catalogue. They do not simulate the Unity engine.
 
 Earlier live validation on 16 October 2026 against NEBULOUS 0.6.2.6 confirmed the battle handoff and native report import with matching ship GUIDs; it did not verify damage carryover or a full combat engagement. On 20 October 2026, bridge 0.5 exported the real fitting catalogue, and a generated three-ship 3,000-point fleet loaded through the normal battle handoff and reached deployment against a current starter fleet without a point-cost discrepancy. The test was closed at deployment, so a completed generated-fleet battle is still a manual check.

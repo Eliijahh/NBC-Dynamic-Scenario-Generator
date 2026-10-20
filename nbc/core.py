@@ -229,6 +229,14 @@ class Campaign:
     def persist(self):
         atomic_bytes(self.state_path, json.dumps(self.state, indent=2).encode())
 
+    def mark_played(self):
+        """Record that this campaign was opened by the player."""
+        if not self.has_campaign:
+            return
+        stamp = now()
+        self.state["campaign"]["last_played"] = stamp
+        self.persist()
+
     def ensure_legacy_campaign(self):
         """Give an existing pre-new-campaign save usable campaign metadata."""
         if self.has_campaign:
@@ -252,6 +260,7 @@ class Campaign:
             "credits": 0,
             "created": now(),
             "started": now(),
+            "last_played": now(),
             "starting_fleet": fleet.name if fleet else "",
             "starting_fleet_source": str(fleet.source) if fleet and fleet.source else "",
             "starting_ships": len(fleet.ships) if fleet else 0,
@@ -273,8 +282,8 @@ class Campaign:
             shutil.copy2(path, directory / path.name)
         return directory
 
-    def start_new_campaign(self, name, commander, faction, credits, starter):
-        """Replace the current save with a fresh campaign and a cloned starter fleet."""
+    def start_new_campaign(self, name, commander, faction, credits, starter, campaign_id=None):
+        """Initialize this save directory with a fresh campaign and cloned starter fleet."""
         if self.state.get("active_battle") or self.state.get("active_refit"):
             raise ValueError("Finish or cancel the pending battle or refit before starting a new campaign.")
         name = str(name).strip()
@@ -304,13 +313,14 @@ class Campaign:
         self.state = {
             "version": 1,
             "campaign": {
-                "id": str(uuid.uuid4()),
+                "id": str(campaign_id or uuid.uuid4()),
                 "name": name,
                 "commander": commander,
                 "faction": faction,
                 "credits": credits,
                 "created": now(),
                 "started": now(),
+                "last_played": now(),
                 "starting_fleet": starter.name,
                 "starting_fleet_source": str(starter.source) if starter.source else "",
                 "starting_ships": len(starter.ships),

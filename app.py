@@ -4,8 +4,9 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
 
-from nbc.core import Campaign, Fleet, DEFAULT_GAME, DEFAULT_STARTING_CREDITS, discover, put
+from nbc.core import Campaign, Fleet, DEFAULT_GAME, DEFAULT_STARTING_CREDITS, ROOT, discover, put
 from nbc.generation import GenerationService
+from nbc.library import CampaignLibrary
 from nbc.refit import RefitService, installed
 
 BG, PANEL, TEXT, MUTED, ACCENT = "#101820", "#182530", "#e4edf4", "#9aafbf", "#53d4b1"
@@ -18,19 +19,12 @@ class App(tk.Tk):
         self.geometry("1260x820")
         self.minsize(1080, 700)
         self.configure(bg=BG)
-        self.campaign = Campaign(game, data)
-        # Only one UI may mutate a given save; independent --data saves remain usable.
-        import msvcrt
-        self.save_lock = (self.campaign.data / "app.lock").open("a+b")
-        self.save_lock.seek(0, 2)
-        if self.save_lock.tell() == 0:
-            self.save_lock.write(b"\0")
-            self.save_lock.flush()
-        self.save_lock.seek(0)
+        self.library = CampaignLibrary(Path(data) if data else ROOT / "data")
+        self.campaign = self._startup_campaign(game)
+        # Only one UI may mutate a given save; independent campaigns remain usable.
         try:
-            msvcrt.locking(self.save_lock.fileno(), msvcrt.LK_NBLCK, 1)
-        except OSError:
-            self.save_lock.close()
+            self.save_lock = self._acquire_lock(self.campaign.data)
+        except ValueError:
             self.withdraw()
             messagebox.showerror("Campaign already open", "This save is already open in another Campaign Command window.", parent=self)
             self.destroy()
@@ -46,6 +40,63 @@ class App(tk.Tk):
         self.show_menu()
         self.protocol("WM_DELETE_WINDOW", self.close)
         self.after(1500, self.poll)
+
+    def _startup_campaign(self, game):
+        """Open the most recently played campaign, falling back to the legacy root save."""
+        root = self.library.path_for_id("root")
+        paths = []
+        last = self.library.last_info()
+        if last and last.valid:
+            paths.append(last.path)
+        if root.resolve() not in {path.resolve() for path in paths}:
+            paths.append(root)
+        for path in paths:
+            try:
+                campaign = Campaign(game, path)
+            except Exception:
+                continue
+            if campaign.has_campaign and campaign.player is not None:
+                return campaign
+        try:
+            return Campaign(game, root)
+        except Exception:
+            # Keep the main menu usable so the player can load another save or
+            # create a fresh campaign even when the legacy root save is corrupt.
+            return Campaign(game, self.library.root / ".menu")
+
+    @staticmethod
+    def _acquire_lock(directory):
+        import msvcrt
+        lock_path = Path(directory) / "app.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock = lock_path.open("a+b")
+        lock.seek(0, 2)
+        if lock.tell() == 0:
+            lock.write(b"\0")
+            lock.flush()
+        lock.seek(0)
+        try:
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            lock.close()
+            raise ValueError("This campaign is already open in another Campaign Command window.")
+        return lock
+
+    def _switch_campaign(self, campaign, campaign_id, new_lock):
+        """Replace the active campaign and move the single-save lock to it."""
+        old_lock = self.save_lock
+        self.campaign = campaign
+        self.save_lock = new_lock
+        self.refits = RefitService(self.campaign)
+        self.generation = GenerationService(self.campaign)
+        if old_lock is not None:
+            old_lock.close()
+        self.library.set_last(campaign_id)
+        campaign.mark_played()
+        self.selected = 0
+        self.refresh()
+        self.show_main()
+        self.tabs.select(self.fleet_tab)
 
     def _style(self):
         s = ttk.Style(self)
@@ -195,7 +246,18 @@ class App(tk.Tk):
             )
         else:
             self.continue_button.grid_remove()
-            self.menu_campaign_info.set("No saved campaign detected.")
+            campaigns = self.library.list()
+            valid = sum(1 for campaign in campaigns if campaign.valid)
+            if valid:
+                self.menu_campaign_info.set(
+                    f"{valid} saved campaign{'s' if valid != 1 else ''} available."
+                )
+            elif campaigns:
+                self.menu_campaign_info.set(
+                    "Saved campaign files were found, but none are readable. Use Load Campaign for details."
+                )
+            else:
+                self.menu_campaign_info.set("No saved campaign detected.")
 
     def show_menu(self):
         self.main.pack_forget()
@@ -210,17 +272,41 @@ class App(tk.Tk):
         if not self.campaign.has_campaign or self.campaign.player is None:
             self._refresh_menu()
             return
+        campaign_id = self.library.id_for_path(self.campaign.data)
+        if campaign_id:
+            self.library.set_last(campaign_id)
+        self.campaign.mark_played()
         self.show_main()
         self.refresh()
         self.tabs.select(self.fleet_tab)
         self.status.set("Campaign loaded. Ready to continue.")
 
     def load_campaign(self):
-        messagebox.showinfo(
-            "Load Campaign",
-            "Loading multiple saved campaigns is the next roadmap step (1.2). Use Continue to open the current campaign.",
-            parent=self,
-        )
+        LoadCampaignDialog(self)
+
+    def open_campaign(self, info):
+        if not info.valid:
+            raise ValueError(info.error or "This campaign save is unreadable.")
+        if self.campaign.data.resolve() == info.path.resolve():
+            self.library.set_last(info.id)
+            self.campaign.mark_played()
+            self.show_main()
+            self.refresh()
+            self.tabs.select(self.fleet_tab)
+            self.status.set(f"Campaign '{self.campaign.metadata.get('name', 'Campaign')}' loaded.")
+            return
+        if self.campaign.state.get("active_battle") or self.campaign.state.get("active_refit") or self.refits.active:
+            raise ValueError("Finish or cancel the pending battle or refit before loading another campaign.")
+        new_lock = self._acquire_lock(info.path)
+        try:
+            campaign = Campaign(self.campaign.game, info.path)
+            if not campaign.has_campaign or campaign.player is None:
+                raise ValueError("This save does not contain a valid campaign fleet.")
+        except Exception:
+            new_lock.close()
+            raise
+        self._switch_campaign(campaign, info.id, new_lock)
+        self.status.set(f"Campaign '{campaign.metadata.get('name', 'Campaign')}' loaded.")
 
     def build_refit_tabs(self):
         self.inventory_tab = ttk.Frame(self.tabs, padding=(0, 12))
@@ -365,26 +451,23 @@ class App(tk.Tk):
             self.refresh()
 
     def new_campaign(self):
-        if self.refits.active or self.campaign.state.get("active_battle"):
-            messagebox.showerror("New campaign", "Finish or cancel the pending battle or refit first.", parent=self)
-            return
-        if self.campaign.has_campaign:
-            if not messagebox.askyesno(
-                "Start a new campaign",
-                "Replace the current campaign with a new one?\n\nThe current campaign files will be backed up under data/campaign-backups before the new save is created.",
-                parent=self,
-            ):
-                return
         NewCampaignDialog(self)
 
     def create_new_campaign(self, name, commander, faction, credits, starter):
         self.status.set("Creating campaign…")
         self.update_idletasks()
-        meta = self.campaign.start_new_campaign(name, commander, faction, credits, starter)
-        self.selected = 0
-        self.refresh()
-        self.show_main()
-        self.tabs.select(self.fleet_tab)
+        campaign_id, path = self.library.new_campaign_path()
+        new_lock = None
+        try:
+            new_lock = self._acquire_lock(path)
+            campaign = Campaign(self.campaign.game, path)
+            meta = campaign.start_new_campaign(name, commander, faction, credits, starter, campaign_id=campaign_id)
+        except Exception:
+            if new_lock is not None:
+                new_lock.close()
+            self.library.remove_campaign_path(path)
+            raise
+        self._switch_campaign(campaign, campaign_id, new_lock)
         self.status.set(
             f"Campaign '{meta['name']}' created with {meta['starting_ships']} ships, "
             f"{meta['starting_points']:,} points and {meta['credits']:,} credits."
@@ -621,8 +704,176 @@ class App(tk.Tk):
         self.destroy()
 
 
+class LoadCampaignDialog(tk.Toplevel):
+    """Modal campaign picker with metadata and save-health reporting."""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self.busy = False
+        self.campaigns = []
+        self.by_id = {}
+        self.title("Load Campaign")
+        self.configure(bg=BG)
+        self.transient(app)
+        self.resizable(True, True)
+        self.protocol("WM_DELETE_WINDOW", self.cancel)
+        self._build()
+        self._reload()
+        self.update_idletasks()
+        screen_width, screen_height = self.winfo_screenwidth(), self.winfo_screenheight()
+        width = min(max(1040, self.winfo_reqwidth() + 24), max(820, screen_width - 120))
+        height = min(max(560, self.winfo_reqheight() + 24), max(500, screen_height - 120))
+        x = app.winfo_rootx() + max(0, (app.winfo_width() - width) // 2)
+        y = app.winfo_rooty() + max(0, (app.winfo_height() - height) // 2)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+        self.minsize(min(880, width), min(480, height))
+        self.grab_set()
+        self.lift()
+        self.tree.focus_set()
+
+    def _build(self):
+        shell = ttk.Frame(self, padding=24)
+        shell.pack(fill="both", expand=True)
+        ttk.Label(shell, text="LOAD CAMPAIGN", foreground=ACCENT, font=("Segoe UI Semibold", 10)).pack(anchor="w")
+        ttk.Label(shell, text="Choose a saved command", style="Title.TLabel").pack(anchor="w", pady=(4, 3))
+        ttk.Label(
+            shell,
+            text="Each campaign has its own fleet, inventory, credits, battle history and pending operations.",
+            style="Muted.TLabel",
+            wraplength=960,
+        ).pack(anchor="w")
+
+        actions = ttk.Frame(shell)
+        actions.pack(side="bottom", fill="x", pady=(16, 0))
+        self.load_button = ttk.Button(actions, text="Load Selected", command=self.load, style="Accent.TButton")
+        self.load_button.pack(side="left")
+        self.refresh_button = ttk.Button(actions, text="Refresh", command=self._reload)
+        self.refresh_button.pack(side="left", padx=10)
+        self.cancel_button = ttk.Button(actions, text="Cancel", command=self.cancel)
+        self.cancel_button.pack(side="left")
+
+        self.message = tk.StringVar(value="Select a campaign to load.")
+        ttk.Label(shell, textvariable=self.message, foreground=ACCENT, wraplength=960).pack(side="bottom", anchor="w", pady=(10, 0))
+
+        frame = ttk.Frame(shell)
+        frame.pack(fill="both", expand=True, pady=(18, 0))
+        columns = ("name", "commander", "faction", "credits", "ships", "played", "status")
+        headings = ("CAMPAIGN", "COMMANDER", "FACTION", "CREDITS", "SHIPS", "LAST PLAYED", "STATUS")
+        widths = (240, 165, 115, 105, 70, 165, 105)
+        self.tree = ttk.Treeview(frame, columns=columns, show="headings", height=8)
+        for column, heading, width in zip(columns, headings, widths):
+            self.tree.heading(column, text=heading)
+            self.tree.column(column, width=width, minwidth=60)
+        self.tree.tag_configure("invalid", foreground="#ef9b9b")
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        self.tree.bind("<<TreeviewSelect>>", self._select)
+
+    @staticmethod
+    def _display_time(value):
+        value = (value or "").strip().replace("T", " ")
+        return value[:19] if value else "Unknown"
+
+    def _reload(self):
+        if self.busy:
+            return
+        self.campaigns = self.app.library.list()
+        self.by_id = {campaign.id: campaign for campaign in self.campaigns}
+        self.tree.delete(*self.tree.get_children())
+        for campaign in self.campaigns:
+            faction = campaign.faction.replace("Stock/", "") if campaign.faction else "—"
+            self.tree.insert(
+                "",
+                "end",
+                iid=campaign.id,
+                values=(
+                    campaign.name,
+                    campaign.commander or "—",
+                    faction,
+                    f"{campaign.credits:,}",
+                    campaign.ships,
+                    self._display_time(campaign.last_played),
+                    "Ready" if campaign.valid else "Unreadable",
+                ),
+                tags=() if campaign.valid else ("invalid",),
+            )
+        if not self.campaigns:
+            self.load_button.configure(state="disabled")
+            self.message.set("No saved campaigns found. Create one from the main menu.")
+            return
+        current_id = self.app.library.id_for_path(self.app.campaign.data)
+        target = current_id if current_id in self.by_id else next(
+            (campaign.id for campaign in self.campaigns if campaign.valid), self.campaigns[0].id
+        )
+        self.tree.selection_set(target)
+        self.tree.focus(target)
+        self.tree.see(target)
+        self._select()
+
+    def _select(self, event=None):
+        selection = self.tree.selection()
+        if not selection:
+            if not self.busy:
+                self.load_button.configure(state="disabled")
+            self.message.set("Select a campaign to load.")
+            return
+        campaign = self.by_id.get(selection[0])
+        if campaign is None:
+            self.load_button.configure(state="disabled")
+            return
+        if not campaign.valid:
+            self.load_button.configure(state="disabled")
+            self.message.set(f"{campaign.name}: {campaign.error}")
+            return
+        self.load_button.configure(state="disabled" if self.busy else "normal")
+        self.message.set(
+            f"{campaign.name}  /  {campaign.commander or 'No commander'}  /  "
+            f"{campaign.credits:,} credits  /  {campaign.ships} ships  /  "
+            f"Last played {self._display_time(campaign.last_played)}"
+        )
+
+    def load(self):
+        if self.busy:
+            return
+        selection = self.tree.selection()
+        campaign = self.by_id.get(selection[0]) if selection else None
+        if campaign is None:
+            self.message.set("Select a campaign to load.")
+            return
+        if not campaign.valid:
+            self.message.set(f"{campaign.name}: {campaign.error}")
+            return
+        self.busy = True
+        self.load_button.configure(state="disabled")
+        self.refresh_button.configure(state="disabled")
+        self.cancel_button.configure(state="disabled")
+        self.message.set("Loading campaign…")
+        self.update_idletasks()
+        try:
+            self.app.open_campaign(campaign)
+        except Exception as exc:
+            self.busy = False
+            self.refresh_button.configure(state="normal")
+            self.cancel_button.configure(state="normal")
+            self.message.set(f"Could not load campaign: {exc}")
+            messagebox.showerror("Load campaign", str(exc), parent=self)
+            self._select()
+            return
+        self.grab_release()
+        self.destroy()
+
+    def cancel(self):
+        if self.busy:
+            return
+        self.grab_release()
+        self.destroy()
+
+
 class NewCampaignDialog(tk.Toplevel):
-    """Modal setup screen for the single active campaign save."""
+    """Modal setup screen for a new independent campaign save."""
 
     def __init__(self, app):
         super().__init__(app)

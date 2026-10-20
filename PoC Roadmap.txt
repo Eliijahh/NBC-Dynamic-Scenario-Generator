@@ -55,12 +55,13 @@ CURRENT BASELINE ALREADY IN THE PROJECT
 [x] Real fitting catalogue exported successfully from NEBULOUS 0.6.2.6.
 [x] Whole-fleet battle handoff to a local skirmish.
 [x] Native battle report import with duplicate-import prevention.
-[x] Existing persistent campaign/battle state in data/campaign.json.
-[x] New Campaign setup with metadata, starter fleet, starting credits and a
-    pre-replacement backup.
+[x] Existing persistent campaign/battle state in data/campaign.json and
+    independent campaign saves under data/campaigns/<id>/.
+[x] New Campaign setup with metadata, starter fleet, starting credits and an
+    independent save directory.
 [x] Pending battle and refit sessions survive app restarts.
 [x] Automatic bridge acknowledgement and graceful game shutdown.
-[x] 60 Python tests passing.
+[x] 64 Python tests passing.
 [x] Generated three-ship fleet reached the native deployment screen without a
     point-cost discrepancy.
 [ ] Full generated-fleet battle played through completion and report imported.
@@ -83,12 +84,16 @@ CURRENT BASELINE ALREADY IN THE PROJECT
 
 1.2 Load Campaign
 [x] Load Campaign entry point on the main menu.
-[ ] Load Campaign screen.
-[ ] List saved campaigns with useful metadata.
-[ ] Show campaign name, credits, fleet size and last played time.
-[ ] Load a selected campaign.
-[ ] Show a loading/progress state while the campaign loads.
-[ ] Handle missing, corrupt or incompatible saves with a clear message.
+[x] Load Campaign screen.
+[x] List saved campaigns with useful metadata.
+[x] Show campaign name, credits, fleet size and last played time.
+[x] Load a selected campaign.
+[x] Show a loading/progress state while the campaign loads.
+[x] Handle missing, corrupt or incompatible saves with a clear message.
+[x] Keep the existing root save loadable as a legacy campaign.
+[x] Track and open the last-played campaign from Continue.
+[x] Move the single-writer save lock when switching campaigns.
+[x] Automated coverage for campaign discovery, last-played tracking and corrupt saves.
 
 1.3 Save data
 [x] Existing campaign/battle state persists across app restarts.
