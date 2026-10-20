@@ -6,7 +6,7 @@ import uuid
 import xml.etree.ElementTree as ET
 
 from nbc.generation import select_generated_fleet
-from nbc.core import Campaign, Fleet, DEFAULT_GAME, discover, put, write_xml
+from nbc.core import Campaign, Fleet, DEFAULT_GAME, DEFAULT_STARTING_CREDITS, discover, put, write_xml
 
 
 def sample(name="Test Fleet", faction="Stock/Alliance"):
@@ -81,6 +81,94 @@ class FleetTests(unittest.TestCase):
         a.validate()
         with self.assertRaises(ValueError):
             select_generated_fleet(sample(), 0)
+
+
+class CampaignSetupTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.campaign = Campaign(self.root / "game", self.root / "data")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_new_campaign_creates_metadata_and_starter_save(self):
+        starter = sample("Starter Fleet")
+        meta = self.campaign.start_new_campaign(
+            "First Watch", "Cmdr Vale", "Stock/Alliance", DEFAULT_STARTING_CREDITS, starter
+        )
+        self.assertEqual(meta["name"], "First Watch")
+        self.assertEqual(meta["commander"], "Cmdr Vale")
+        self.assertEqual(meta["faction"], "Stock/Alliance")
+        self.assertEqual(meta["credits"], DEFAULT_STARTING_CREDITS)
+        self.assertEqual(meta["starting_fleet"], "Starter Fleet")
+        self.assertEqual(meta["starting_ships"], 1)
+        self.assertEqual(meta["starting_points"], 350)
+        self.assertFalse(meta["legacy"])
+
+        restarted = Campaign(self.campaign.game, self.campaign.data)
+        self.assertTrue(restarted.has_campaign)
+        self.assertEqual(restarted.metadata["name"], "First Watch")
+        self.assertEqual(restarted.player.name, "Starter Fleet")
+        self.assertEqual(restarted.player.points, 350)
+        self.assertIsNone(restarted.enemy)
+        self.assertEqual(restarted.state["battles"], [])
+        self.assertEqual(restarted.state["ship_results"], {})
+        self.assertEqual(restarted.state["inventory"], {})
+
+    def test_new_campaign_backs_up_previous_save_and_clears_enemy(self):
+        self.campaign.player = sample("Old Fleet")
+        self.campaign.enemy = sample("Old Enemy", "Stock/Protectorate")
+        self.campaign.save_fleets()
+        self.assertTrue((self.campaign.data / "enemy.fleet").exists())
+
+        self.campaign.start_new_campaign(
+            "Replacement", "Cmdr New", "Stock/Alliance", 250_000, sample("New Starter")
+        )
+
+        backups = list((self.campaign.data / "campaign-backups").iterdir())
+        self.assertEqual(len(backups), 1)
+        self.assertTrue((backups[0] / "campaign.json").exists())
+        self.assertTrue((backups[0] / "player.fleet").exists())
+        self.assertTrue((backups[0] / "enemy.fleet").exists())
+        self.assertFalse((self.campaign.data / "enemy.fleet").exists())
+        self.assertIsNone(self.campaign.enemy)
+
+    def test_legacy_save_gets_campaign_metadata(self):
+        self.campaign.player = sample("Old Fleet")
+        self.campaign.save_fleets()
+        self.assertFalse(self.campaign.has_campaign)
+
+        restarted = Campaign(self.campaign.game, self.campaign.data)
+        self.assertTrue(restarted.has_campaign)
+        self.assertTrue(restarted.metadata["legacy"])
+        self.assertEqual(restarted.metadata["name"], "Old Fleet")
+        self.assertEqual(restarted.metadata["credits"], 0)
+        self.assertEqual(restarted.metadata["starting_points"], 350)
+
+    def test_new_campaign_validates_setup(self):
+        starter = sample()
+        cases = [
+            ("", "Cmdr", "Stock/Alliance", 1000, starter),
+            ("Campaign", "", "Stock/Alliance", 1000, starter),
+            ("Campaign", "Cmdr", "Unknown", 1000, starter),
+            ("Campaign", "Cmdr", "Stock/Alliance", -1, starter),
+            ("Campaign", "Cmdr", "Stock/Alliance", True, starter),
+            ("Campaign", "Cmdr", "Stock/Protectorate", 1000, starter),
+            ("Campaign", "Cmdr", "Stock/Alliance", 1000, None),
+        ]
+        for args in cases:
+            with self.subTest(args=args):
+                with self.assertRaises(ValueError):
+                    self.campaign.start_new_campaign(*args)
+
+    def test_new_campaign_is_blocked_by_pending_activity(self):
+        self.campaign.state["active_battle"] = {"id": "pending"}
+        with self.assertRaises(ValueError):
+            self.campaign.start_new_campaign(
+                "Campaign", "Cmdr", "Stock/Alliance", 1000, sample()
+            )
+        self.assertEqual(self.campaign.state["active_battle"], {"id": "pending"})
 
 
 class ExchangeTests(unittest.TestCase):

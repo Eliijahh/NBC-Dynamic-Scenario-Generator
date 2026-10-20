@@ -56,9 +56,11 @@ CURRENT BASELINE ALREADY IN THE PROJECT
 [x] Whole-fleet battle handoff to a local skirmish.
 [x] Native battle report import with duplicate-import prevention.
 [x] Existing persistent campaign/battle state in data/campaign.json.
+[x] New Campaign setup with metadata, starter fleet, starting credits and a
+    pre-replacement backup.
 [x] Pending battle and refit sessions survive app restarts.
 [x] Automatic bridge acknowledgement and graceful game shutdown.
-[x] 55 Python tests passing.
+[x] 60 Python tests passing.
 [x] Generated three-ship fleet reached the native deployment screen without a
     point-cost discrepancy.
 [ ] Full generated-fleet battle played through completion and report imported.
@@ -68,15 +70,19 @@ CURRENT BASELINE ALREADY IN THE PROJECT
 1. CAMPAIGN SHELL AND PERSISTENCE
 --------------------------------
 1.1 New Campaign
-[ ] New Campaign screen.
-[ ] Campaign name and commander/faction setup.
-[ ] Starting credits.
-[ ] Starting roster and starting loadouts.
-[ ] Create a new campaign save from the setup screen.
-[ ] Prevent accidental overwrite of an existing campaign.
-[ ] Show a loading/progress state while the campaign is created.
+[x] Main menu with Continue, New Campaign, Load Campaign and Exit.
+[x] Continue appears only when a valid existing campaign is detected.
+[x] New Campaign is available only from the main menu.
+[x] New Campaign screen.
+[x] Campaign name and commander/faction setup.
+[x] Starting credits stored with the campaign (default value; not exposed in the setup popup).
+[x] Starting roster and starting loadouts.
+[x] Create a new campaign save from the setup screen.
+[x] Prevent accidental overwrite of an existing campaign.
+[x] Show a loading/progress state while the campaign is created.
 
 1.2 Load Campaign
+[x] Load Campaign entry point on the main menu.
 [ ] Load Campaign screen.
 [ ] List saved campaigns with useful metadata.
 [ ] Show campaign name, credits, fleet size and last played time.
@@ -349,7 +355,7 @@ CURRENT BASELINE ALREADY IN THE PROJECT
 9. VALIDATION AND TESTS
 -----------------------
 9.1 Existing checks
-[x] 55 Python tests pass.
+[x] 60 Python tests pass.
 [x] Python compile checks pass.
 [x] git diff --check passes.
 [x] Bridge build succeeds.

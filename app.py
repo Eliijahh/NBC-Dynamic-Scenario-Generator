@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
 
-from nbc.core import Campaign, Fleet, DEFAULT_GAME, discover, put
+from nbc.core import Campaign, Fleet, DEFAULT_GAME, DEFAULT_STARTING_CREDITS, discover, put
 from nbc.generation import GenerationService
 from nbc.refit import RefitService, installed
 
@@ -42,11 +42,8 @@ class App(tk.Tk):
         self.loading = False
         self._style()
         self._build()
-        if not self.campaign.player and self.templates:
-            default = next((f for f in self.templates if f.source and f.source.parent.name == "Starter Fleets - Alliance"), self.templates[0])
-            self.campaign.player = default.clone()
-            self.campaign.save_fleets()
         self.refresh()
+        self.show_menu()
         self.protocol("WM_DELETE_WINDOW", self.close)
         self.after(1500, self.poll)
 
@@ -74,11 +71,19 @@ class App(tk.Tk):
         s.map("TNotebook.Tab", background=[("selected", "#31515b")])
 
     def _build(self):
-        shell = ttk.Frame(self, padding=24)
-        shell.pack(fill="both", expand=True)
-        ttk.Label(shell, text="CAMPAIGN COMMAND", foreground=ACCENT, font=("Segoe UI Semibold", 10)).pack(anchor="w")
-        ttk.Label(shell, text="Your fleet. Every engagement.", style="Title.TLabel").pack(anchor="w", pady=(4, 3))
-        ttk.Label(shell, text="Proof of concept  /  Native fleet editing → live skirmish → battle results", style="Muted.TLabel").pack(anchor="w")
+        self.menu = ttk.Frame(self, padding=24)
+        self._build_menu()
+        self.main = ttk.Frame(self, padding=24)
+        shell = self.main
+        header = ttk.Frame(shell)
+        header.pack(fill="x")
+        heading = ttk.Frame(header)
+        heading.pack(side="left", fill="x", expand=True)
+        ttk.Label(heading, text="CAMPAIGN COMMAND", foreground=ACCENT, font=("Segoe UI Semibold", 10)).pack(anchor="w")
+        ttk.Label(heading, text="Your fleet. Every engagement.", style="Title.TLabel").pack(anchor="w", pady=(4, 3))
+        ttk.Label(heading, text="Proof of concept  /  Native fleet editing → live skirmish → battle results", style="Muted.TLabel").pack(anchor="w")
+        self.campaign_info = tk.StringVar(value="")
+        ttk.Label(shell, textvariable=self.campaign_info, foreground=MUTED, wraplength=1160).pack(anchor="w", pady=(7, 0))
         footer = ttk.Frame(shell)
         footer.pack(side="bottom", fill="x", pady=(10, 0))
         self.status = tk.StringVar(value="Ready")
@@ -154,6 +159,68 @@ class App(tk.Tk):
         self.history.bind("<<TreeviewSelect>>", self.select_result)
         self.results = self.tree(self.result_tab, ("side", "name", "status", "condition", "crew", "damage"), ("SIDE", "SHIP", "STATUS", "CONDITION", "CREW", "DAMAGE DEALT"), (90, 230, 140, 100, 100, 130), height=7)
         ttk.Label(self.result_tab, text="Raw battle reports and input fleets are archived under data/battles/<battle ID>/.", style="Muted.TLabel").pack(anchor="w", pady=10)
+
+    def _build_menu(self):
+        self.menu.columnconfigure(0, weight=1)
+        self.menu.rowconfigure(0, weight=1)
+        center = ttk.Frame(self.menu)
+        center.grid(row=0, column=0)
+        ttk.Label(center, text="CAMPAIGN COMMAND", foreground=ACCENT, font=("Segoe UI Semibold", 10)).pack(anchor="center")
+        ttk.Label(center, text="Your fleet. Every engagement.", style="Title.TLabel").pack(anchor="center", pady=(4, 3))
+        ttk.Label(center, text="NEBULOUS campaign proof of concept", style="Muted.TLabel").pack(anchor="center")
+        self.menu_campaign_info = tk.StringVar(value="")
+        ttk.Label(center, textvariable=self.menu_campaign_info, foreground=MUTED, wraplength=520).pack(anchor="center", pady=(18, 0))
+        buttons = ttk.Frame(center)
+        buttons.pack(fill="x", pady=(24, 0))
+        buttons.columnconfigure(0, weight=1)
+        self.continue_button = ttk.Button(buttons, text="Continue", command=self.continue_campaign, style="Accent.TButton", width=28)
+        self.continue_button.grid(row=0, column=0, sticky="ew", pady=5)
+        self.new_campaign_menu_button = ttk.Button(buttons, text="New Campaign", command=self.new_campaign, width=28)
+        self.new_campaign_menu_button.grid(row=1, column=0, sticky="ew", pady=5)
+        self.load_campaign_button = ttk.Button(buttons, text="Load Campaign", command=self.load_campaign, width=28)
+        self.load_campaign_button.grid(row=2, column=0, sticky="ew", pady=5)
+        self.exit_button = ttk.Button(buttons, text="Exit", command=self.close, width=28)
+        self.exit_button.grid(row=3, column=0, sticky="ew", pady=5)
+        ttk.Label(center, text=str(self.campaign.game), style="Muted.TLabel", wraplength=520).pack(anchor="center", pady=(24, 0))
+
+    def _refresh_menu(self):
+        meta = self.campaign.metadata
+        can_continue = self.campaign.has_campaign and self.campaign.player is not None
+        if can_continue:
+            self.continue_button.grid()
+            self.menu_campaign_info.set(
+                f"Continue: {meta.get('name', 'Campaign')}  /  "
+                f"{meta.get('commander') or 'No commander'}  /  "
+                f"{int(meta.get('credits', 0)):,} credits"
+            )
+        else:
+            self.continue_button.grid_remove()
+            self.menu_campaign_info.set("No saved campaign detected.")
+
+    def show_menu(self):
+        self.main.pack_forget()
+        self.menu.pack(fill="both", expand=True)
+        self._refresh_menu()
+
+    def show_main(self):
+        self.menu.pack_forget()
+        self.main.pack(fill="both", expand=True)
+
+    def continue_campaign(self):
+        if not self.campaign.has_campaign or self.campaign.player is None:
+            self._refresh_menu()
+            return
+        self.show_main()
+        self.refresh()
+        self.tabs.select(self.fleet_tab)
+        self.status.set("Campaign loaded. Ready to continue.")
+
+    def load_campaign(self):
+        messagebox.showinfo(
+            "Load Campaign",
+            "Loading multiple saved campaigns is the next roadmap step (1.2). Use Continue to open the current campaign.",
+            parent=self,
+        )
 
     def build_refit_tabs(self):
         self.inventory_tab = ttk.Frame(self.tabs, padding=(0, 12))
@@ -297,6 +364,32 @@ class App(tk.Tk):
             self.guarded(self.refits.cancel)
             self.refresh()
 
+    def new_campaign(self):
+        if self.refits.active or self.campaign.state.get("active_battle"):
+            messagebox.showerror("New campaign", "Finish or cancel the pending battle or refit first.", parent=self)
+            return
+        if self.campaign.has_campaign:
+            if not messagebox.askyesno(
+                "Start a new campaign",
+                "Replace the current campaign with a new one?\n\nThe current campaign files will be backed up under data/campaign-backups before the new save is created.",
+                parent=self,
+            ):
+                return
+        NewCampaignDialog(self)
+
+    def create_new_campaign(self, name, commander, faction, credits, starter):
+        self.status.set("Creating campaign…")
+        self.update_idletasks()
+        meta = self.campaign.start_new_campaign(name, commander, faction, credits, starter)
+        self.selected = 0
+        self.refresh()
+        self.show_main()
+        self.tabs.select(self.fleet_tab)
+        self.status.set(
+            f"Campaign '{meta['name']}' created with {meta['starting_ships']} ships, "
+            f"{meta['starting_points']:,} points and {meta['credits']:,} credits."
+        )
+
     def create_test_fleet(self):
         def action():
             self.editable()
@@ -346,6 +439,11 @@ class App(tk.Tk):
         self.refits.ensure_idle()
 
     def refresh(self):
+        meta = self.campaign.metadata
+        if meta:
+            self.campaign_info.set(f"{meta.get('name', 'Campaign')}  /  {meta.get('commander') or 'No commander'}  /  {meta.get('faction', '').replace('Stock/', '')}  /  {int(meta.get('credits', 0)):,} credits")
+        else:
+            self.campaign_info.set("No campaign created. Use New Campaign to begin.")
         self.ships.delete(*self.ships.get_children())
         f = self.campaign.player
         if f:
@@ -354,17 +452,23 @@ class App(tk.Tk):
                 self.ships.insert("", "end", iid=str(i), values=(s.findtext("Name"), s.findtext("HullType", "").replace("Stock/", ""), s.findtext("Cost")))
             if f.ships:
                 self.ships.selection_set(str(min(self.selected or 0, len(f.ships) - 1)))
+        else:
+            self.fleet_info.configure(text="No campaign fleet loaded.")
         self.enemies.delete(*self.enemies.get_children())
         if self.campaign.enemy:
             e = self.campaign.enemy
             self.enemy_info.configure(text=f"{len(e.ships)} hostile ships  /  {e.points:,} points  /  {e.faction.replace('Stock/', '')}")
             for s in e.ships:
                 self.enemies.insert("", "end", values=(s.findtext("Name"), s.findtext("HullType", "").replace("Stock/", ""), s.findtext("Cost")))
+        else:
+            self.enemy_info.configure(text="Generate an enemy to continue.")
         self.history.delete(*self.history.get_children())
         for b in reversed(self.campaign.state["battles"]):
             self.history.insert("", "end", iid=b["id"], values=(b["created"][:19].replace("T", " ") + " UTC", b.get("outcome", b["status"]), b.get("duration", "—"), b["id"]))
-        self.run_button.configure(state="disabled" if self.campaign.state.get("active_battle") or self.refits.active else "normal")
-        self.generate_button.configure(state="disabled" if self.campaign.state.get("active_battle") or self.refits.active else "normal")
+        busy = bool(self.campaign.state.get("active_battle") or self.refits.active)
+        self.run_button.configure(state="disabled" if busy or not self.campaign.player or not self.campaign.enemy else "normal")
+        self.generate_button.configure(state="disabled" if busy or not self.campaign.has_campaign else "normal")
+        self._refresh_menu()
         self.refresh_inventory()
         self.refresh_refit()
 
@@ -514,6 +618,190 @@ class App(tk.Tk):
     def close(self):
         self.guarded(self.campaign.save_fleets)
         self.save_lock.close()
+        self.destroy()
+
+
+class NewCampaignDialog(tk.Toplevel):
+    """Modal setup screen for the single active campaign save."""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self.busy = False
+        self.starting_fleets = []
+        self.faction_values = []
+        self.title("New Campaign")
+        self.configure(bg=BG)
+        self.transient(app)
+        self.resizable(True, True)
+        self.protocol("WM_DELETE_WINDOW", self.cancel)
+        self._build()
+        self._refresh_factions()
+        self.update_idletasks()
+        screen_width, screen_height = self.winfo_screenwidth(), self.winfo_screenheight()
+        width = min(max(880, self.winfo_reqwidth() + 24), max(760, screen_width - 120))
+        height = min(max(700, self.winfo_reqheight() + 24), max(600, screen_height - 120))
+        x = app.winfo_rootx() + max(0, (app.winfo_width() - width) // 2)
+        y = app.winfo_rooty() + max(0, (app.winfo_height() - height) // 2)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+        self.minsize(min(800, width), min(620, height))
+        self.grab_set()
+        self.lift()
+        self.name_entry.focus_set()
+
+    def _build(self):
+        shell = ttk.Frame(self, padding=24)
+        shell.pack(fill="both", expand=True)
+        ttk.Label(shell, text="NEW CAMPAIGN", foreground=ACCENT, font=("Segoe UI Semibold", 10)).pack(anchor="w")
+        ttk.Label(shell, text="Choose your command", style="Title.TLabel").pack(anchor="w", pady=(4, 3))
+        ttk.Label(
+            shell,
+            text="The selected starter fleet and its loadouts are copied into the new campaign.",
+            style="Muted.TLabel",
+            wraplength=800,
+        ).pack(anchor="w")
+
+        form = ttk.Frame(shell)
+        form.pack(fill="x", pady=(18, 8))
+        form.columnconfigure(1, weight=1)
+        self.name = tk.StringVar(value="New Campaign")
+        self.commander = tk.StringVar(value="Commander")
+        self.faction = ttk.Combobox(form, state="readonly", width=28)
+        self.faction.bind("<<ComboboxSelected>>", self._refresh_starters)
+        self.starting_choice = ttk.Combobox(form, state="readonly")
+        self.starting_choice.bind("<<ComboboxSelected>>", self._preview)
+
+        self.name_entry = ttk.Entry(form, textvariable=self.name)
+        rows = [
+            ("Campaign name", self.name_entry),
+            ("Commander", ttk.Entry(form, textvariable=self.commander)),
+            ("Faction", self.faction),
+            ("Starter fleet", self.starting_choice),
+        ]
+        for index, (label, widget) in enumerate(rows):
+            ttk.Label(form, text=label).grid(row=index, column=0, sticky="w", padx=(0, 14), pady=6)
+            widget.grid(row=index, column=1, sticky="ew", pady=6)
+
+        self.fleet_summary = tk.StringVar(value="")
+        ttk.Label(shell, textvariable=self.fleet_summary, foreground=ACCENT, wraplength=800).pack(anchor="w", pady=(4, 0))
+
+        # Reserve the action row from the bottom first so the dialog buttons can
+        # never be pushed out of view by the expanding fleet preview.
+        actions = ttk.Frame(shell)
+        actions.pack(side="bottom", fill="x", pady=(16, 0))
+        self.create_button = ttk.Button(actions, text="Create Campaign", command=self.create, style="Accent.TButton")
+        self.create_button.pack(side="left")
+        self.cancel_button = ttk.Button(actions, text="Cancel", command=self.cancel)
+        self.cancel_button.pack(side="left", padx=10)
+        self.message = tk.StringVar(value="Select a starter fleet.")
+        ttk.Label(shell, textvariable=self.message, style="Muted.TLabel", wraplength=800).pack(side="bottom", anchor="w", pady=(10, 0))
+
+        ttk.Label(
+            shell,
+            text="Preview: hulls and points in the starting roster. The native fleet editor can change loadouts later.",
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(10, 5))
+        preview_frame = ttk.Frame(shell)
+        preview_frame.pack(fill="both", expand=True)
+        self.preview = ttk.Treeview(preview_frame, columns=("name", "hull", "points"), show="headings", height=6)
+        for column, heading, width in (("name", "SHIP", 250), ("hull", "HULL", 360), ("points", "POINTS", 90)):
+            self.preview.heading(column, text=heading)
+            self.preview.column(column, width=width, minwidth=60)
+        scrollbar = ttk.Scrollbar(preview_frame, orient="vertical", command=self.preview.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.preview.configure(yscrollcommand=scrollbar.set)
+        self.preview.pack(side="left", fill="both", expand=True)
+
+    def _selected_faction(self):
+        index = self.faction.current()
+        return self.faction_values[index] if 0 <= index < len(self.faction_values) else None
+
+    def _refresh_factions(self):
+        values = sorted({f.faction for f in self.app.templates if f.faction in ("Stock/Alliance", "Stock/Protectorate")})
+        if not values:
+            values = ["Stock/Alliance", "Stock/Protectorate"]
+        self.faction_values = values
+        self.faction["values"] = [value.replace("Stock/", "") for value in values]
+        default = values.index("Stock/Alliance") if "Stock/Alliance" in values else 0
+        self.faction.current(default)
+        self._refresh_starters()
+
+    def _refresh_starters(self, event=None):
+        faction = self._selected_faction()
+        folder = {
+            "Stock/Alliance": "Starter Fleets - Alliance",
+            "Stock/Protectorate": "Starter Fleets - Protectorate",
+        }.get(faction)
+        available = [fleet for fleet in self.app.templates if fleet.faction == faction]
+        preferred = [fleet for fleet in available if fleet.source and fleet.source.parent.name == folder]
+        self.starting_fleets = preferred or available
+        self.starting_choice["values"] = [
+            f"{fleet.name}  ·  {len(fleet.ships)} ships  ·  {fleet.points:,} pts" for fleet in self.starting_fleets
+        ]
+        if self.starting_fleets:
+            self.starting_choice.current(0)
+        else:
+            self.starting_choice.set("")
+        self._preview()
+
+    def _preview(self, event=None):
+        self.preview.delete(*self.preview.get_children())
+        index = self.starting_choice.current()
+        if not 0 <= index < len(self.starting_fleets):
+            self.fleet_summary.set("No starter fleet is available for this faction.")
+            self.create_button.configure(state="disabled")
+            return
+        fleet = self.starting_fleets[index]
+        for ship in fleet.ships:
+            self.preview.insert("", "end", values=(
+                ship.findtext("Name", ""),
+                ship.findtext("HullType", "").replace("Stock/", ""),
+                ship.findtext("Cost", "0"),
+            ))
+        self.fleet_summary.set(
+            f"{fleet.name}: {len(fleet.ships)} ships / {fleet.points:,} points. "
+            "Loadouts are copied from this starter fleet."
+        )
+        self.create_button.configure(state="disabled" if self.busy else "normal")
+
+    def create(self):
+        if self.busy:
+            return
+        try:
+            name = self.name.get().strip()
+            commander = self.commander.get().strip()
+            index = self.starting_choice.current()
+            if not 0 <= index < len(self.starting_fleets):
+                raise ValueError("Choose a starter fleet.")
+            starter = self.starting_fleets[index]
+            faction = self._selected_faction()
+            if faction != starter.faction:
+                raise ValueError("The starter fleet must match the selected faction.")
+        except ValueError as exc:
+            self.message.set(str(exc))
+            messagebox.showerror("New campaign", str(exc), parent=self)
+            return
+        self.busy = True
+        self.create_button.configure(state="disabled")
+        self.cancel_button.configure(state="disabled")
+        self.message.set("Creating campaign…")
+        self.update_idletasks()
+        try:
+            self.app.create_new_campaign(name, commander, faction, DEFAULT_STARTING_CREDITS, starter)
+        except Exception as exc:
+            self.busy = False
+            self.cancel_button.configure(state="normal")
+            self._preview()
+            self.message.set(str(exc))
+            messagebox.showerror("New campaign", str(exc), parent=self)
+            return
+        self.grab_release()
+        self.destroy()
+
+    def cancel(self):
+        if self.busy:
+            return
+        self.grab_release()
         self.destroy()
 
 

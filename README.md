@@ -36,7 +36,7 @@ Requirements: Windows, Python 3.10+ with Tkinter, NEBULOUS: Fleet Command, and S
    ```
 
 2. Start NEBULOUS normally. Open **Mods**, enable **NBC Campaign Bridge**, apply the change, and return to the main menu. This is a one-time step. A running game must be restarted after updating the bridge DLL. Returning to the main menu is enough for the bridge to export the fitting catalogue.
-3. Double-click **Start Campaign.cmd**, or run `python app.py`.
+3. Double-click **Start Campaign.cmd**, or run `python app.py`. The app opens on the main menu with **Continue**, **New Campaign**, **Load Campaign** and **Exit**. **Continue** is shown only when an existing campaign is detected. Choose **New Campaign** to set a campaign name, commander, faction and starter fleet; the starter fleet and its loadouts are copied into the new campaign. Replacing an existing campaign backs up `campaign.json` and its top-level fleet files under `data/campaign-backups` first. **Load Campaign** is reserved for the next roadmap step.
 4. On **Fleet**, load an installed fleet or import a `.fleet` file. Rename ships or change hull numbers. Use the native refit workflow above to change equipment. Original fleet files are preserved.
 5. On **Battle**, choose an enemy faction and target point budget, then **Generate enemy**. The app fits new ships and loadouts from the native catalogue. The actual total may differ from the target.
 6. Click **Run battle → NEBULOUS**. The game opens if necessary. If it is already running, return to its main menu. The bridge creates a local skirmish, assigns your fleet and one AI enemy, validates settings and launches it. Deploy your ships and play normally.
@@ -81,7 +81,8 @@ scripts/Build Bridge.ps1     Compile against installed game libraries
 Install Bridge.ps1          Install only this mod's files
 data/player.fleet           Working player fleet (ignored by Git)
 data/enemy.fleet            Generated enemy (ignored by Git)
-data/campaign.json          Battle history and last reported ship status
+data/campaign.json          Campaign metadata, credits, battle history and ship status
+data/campaign-backups/      Top-level campaign files backed up before replacement
 data/battles/<id>/           Input fleets, native report.xml and result.xml
 data/refits/<id>/            Original fleet, revision inputs and exported drafts
 tests/fixtures/              Synthetic fitting catalogue used by offline tests

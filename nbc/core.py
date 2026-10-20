@@ -7,11 +7,13 @@ import json
 import os
 from pathlib import Path
 import random
+import shutil
 import uuid
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 DEFAULT_GAME = Path(r"R:\SteamLibrary\steamapps\common\Nebulous")
+DEFAULT_STARTING_CREDITS = 1_000_000
 ROOT = Path(__file__).resolve().parent.parent
 ET.register_namespace("xsi", "http://www.w3.org/2001/XMLSchema-instance")
 ET.register_namespace("xsd", "http://www.w3.org/2001/XMLSchema")
@@ -199,6 +201,7 @@ class Campaign:
         self.state = {"version": 1, "battles": [], "ship_results": {}, "active_battle": None}
         if self.state_path.exists():
             self.state = json.loads(self.state_path.read_text(encoding="utf-8"))
+        self.state.setdefault("campaign", None)
         self.state.setdefault("inventory", {})
         self.state.setdefault("active_refit", None)
         self.state.setdefault("refits", [])
@@ -209,13 +212,129 @@ class Campaign:
         self.runtime = GameRuntime(self.game, self.exchange)
         self.player = Fleet(ET.fromstring(self.state["player_xml"])) if self.state.get("player_xml") else Fleet.load(self.data / "player.fleet") if (self.data / "player.fleet").exists() else None
         self.enemy = Fleet(ET.fromstring(self.state["enemy_xml"])) if self.state.get("enemy_xml") else Fleet.load(self.data / "enemy.fleet") if (self.data / "enemy.fleet").exists() else None
+        self.ensure_legacy_campaign()
 
     @property
     def exchange(self):
         return self.game / "Saves" / "NBCBridge"
 
+    @property
+    def metadata(self):
+        return self.state.get("campaign") or {}
+
+    @property
+    def has_campaign(self):
+        return bool(self.state.get("campaign"))
+
     def persist(self):
         atomic_bytes(self.state_path, json.dumps(self.state, indent=2).encode())
+
+    def ensure_legacy_campaign(self):
+        """Give an existing pre-new-campaign save usable campaign metadata."""
+        if self.has_campaign:
+            return
+        has_existing_state = bool(
+            self.player
+            or self.state.get("battles")
+            or self.state.get("ship_results")
+            or self.state.get("inventory")
+            or self.state.get("active_battle")
+            or self.state.get("active_refit")
+        )
+        if not has_existing_state:
+            return
+        fleet = self.player
+        self.state["campaign"] = {
+            "id": str(uuid.uuid4()),
+            "name": fleet.name if fleet else "Legacy Campaign",
+            "commander": "",
+            "faction": fleet.faction if fleet else "",
+            "credits": 0,
+            "created": now(),
+            "started": now(),
+            "starting_fleet": fleet.name if fleet else "",
+            "starting_fleet_source": str(fleet.source) if fleet and fleet.source else "",
+            "starting_ships": len(fleet.ships) if fleet else 0,
+            "starting_points": fleet.points if fleet else 0,
+            "legacy": True,
+        }
+        self.persist()
+
+    def backup_campaign(self, reason="new-campaign"):
+        """Copy the current campaign's top-level state before replacing it."""
+        files = [self.state_path, self.data / "player.fleet", self.data / "enemy.fleet"]
+        existing = [path for path in files if path.exists()]
+        if not existing:
+            return None
+        stamp = now().replace(":", "-")
+        directory = self.data / "campaign-backups" / f"{stamp}-{reason}"
+        directory.mkdir(parents=True, exist_ok=False)
+        for path in existing:
+            shutil.copy2(path, directory / path.name)
+        return directory
+
+    def start_new_campaign(self, name, commander, faction, credits, starter):
+        """Replace the current save with a fresh campaign and a cloned starter fleet."""
+        if self.state.get("active_battle") or self.state.get("active_refit"):
+            raise ValueError("Finish or cancel the pending battle or refit before starting a new campaign.")
+        name = str(name).strip()
+        commander = str(commander).strip()
+        if not name:
+            raise ValueError("Enter a campaign name.")
+        if len(name) > 80:
+            raise ValueError("Campaign name must be 80 characters or fewer.")
+        if not commander:
+            raise ValueError("Enter a commander name.")
+        if len(commander) > 80:
+            raise ValueError("Commander name must be 80 characters or fewer.")
+        if faction not in ("Stock/Alliance", "Stock/Protectorate"):
+            raise ValueError("Choose a stock faction.")
+        if type(credits) is not int or not 0 <= credits <= 1_000_000_000:
+            raise ValueError("Starting credits must be a whole number from 0 to 1,000,000,000.")
+        if starter is None:
+            raise ValueError("Choose a starting fleet.")
+        if starter.faction != faction:
+            raise ValueError("The starting fleet must match the selected faction.")
+        starter.validate()
+        starter = starter.clone()
+        starter.validate()
+
+        self.backup_campaign()
+        previous = (copy.deepcopy(self.state), self.player, self.enemy)
+        self.state = {
+            "version": 1,
+            "campaign": {
+                "id": str(uuid.uuid4()),
+                "name": name,
+                "commander": commander,
+                "faction": faction,
+                "credits": credits,
+                "created": now(),
+                "started": now(),
+                "starting_fleet": starter.name,
+                "starting_fleet_source": str(starter.source) if starter.source else "",
+                "starting_ships": len(starter.ships),
+                "starting_points": starter.points,
+                "legacy": False,
+            },
+            "battles": [],
+            "ship_results": {},
+            "active_battle": None,
+            "inventory": {},
+            "active_refit": None,
+            "refits": [],
+        }
+        self.player = starter
+        self.enemy = None
+        try:
+            enemy_path = self.data / "enemy.fleet"
+            if enemy_path.exists():
+                enemy_path.unlink()
+            self.save_fleets()
+        except Exception:
+            self.state, self.player, self.enemy = previous
+            raise
+        return self.metadata
 
     def save_fleets(self):
         if self.player:
