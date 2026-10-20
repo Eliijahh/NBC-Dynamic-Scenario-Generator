@@ -102,6 +102,8 @@ CURRENT BASELINE ALREADY IN THE PROJECT
 [ ] Save after every economic or campaign-state transaction.
 [ ] Atomic save writes.
 [ ] Backup of the previous save.
+[ ] Initial Settings tab with manual save, resume, save-and-exit and
+    exit-without-saving actions for Campaign Command.
 [ ] Schema version and migration handling.
 [ ] Resume an accepted mission/deployment after an app restart.
 [ ] Lock incompatible actions while a mission, battle or refit is pending.
