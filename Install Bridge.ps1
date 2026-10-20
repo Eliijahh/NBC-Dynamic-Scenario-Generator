@@ -4,7 +4,7 @@ if (Get-Process Nebulous -ErrorAction SilentlyContinue) { throw 'Close NEBULOUS 
 & (Join-Path $PSScriptRoot 'scripts\Build Bridge.ps1') -GamePath $GamePath
 $installPath = Join-Path $GamePath 'Mods\NBCBridge'
 New-Item -ItemType Directory -Force -Path $installPath | Out-Null
-foreach ($fileName in @('NBCBridge.dll', 'ModInfo.xml')) {
+foreach ($fileName in @('NBCBridge.dll', 'ModInfo.xml', '0Harmony.dll', 'Harmony-LICENSE.txt')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot "build\NBCBridge\$fileName") -Destination $installPath -Force
 }
 Write-Output "Installed bridge at $installPath"

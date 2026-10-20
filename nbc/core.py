@@ -228,7 +228,10 @@ class Campaign:
         self.state = {"version": 1, "battles": [], "ship_results": {}, "active_battle": None}
         if self.state_path.exists():
             self.state = json.loads(self.state_path.read_text(encoding="utf-8"))
-        self.player = Fleet.load(self.data / "player.fleet") if (self.data / "player.fleet").exists() else None
+        self.state.setdefault("inventory", {})
+        self.state.setdefault("active_refit", None)
+        self.state.setdefault("refits", [])
+        self.player = Fleet(ET.fromstring(self.state["player_xml"])) if self.state.get("player_xml") else Fleet.load(self.data / "player.fleet") if (self.data / "player.fleet").exists() else None
         self.enemy = Fleet.load(self.data / "enemy.fleet") if (self.data / "enemy.fleet").exists() else None
 
     @property
@@ -240,11 +243,16 @@ class Campaign:
 
     def save_fleets(self):
         if self.player:
+            self.player.validate()
+            self.state["player_xml"] = ET.tostring(self.player.root, encoding="unicode")
+            self.persist()
             self.player.save(self.data / "player.fleet")
         if self.enemy:
             self.enemy.save(self.data / "enemy.fleet")
 
     def prepare(self):
+        if self.state.get("active_refit"):
+            raise ValueError("Finish or cancel the refit before launching a battle.")
         if self.state.get("active_battle"):
             raise ValueError("A battle is already pending. Finish it or cancel it before launching another.")
         if not self.player or not self.enemy:

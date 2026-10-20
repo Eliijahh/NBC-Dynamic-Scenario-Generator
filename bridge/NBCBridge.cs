@@ -26,6 +26,7 @@ namespace NBCBridge
             var obj = new GameObject("NBC Campaign Bridge");
             UnityEngine.Object.DontDestroyOnLoad(obj);
             obj.AddComponent<BattleBridge>();
+            obj.AddComponent<RefitBridge>();
             Debug.Log("[NBC] Campaign bridge loaded.");
         }
     }
