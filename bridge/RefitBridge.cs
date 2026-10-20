@@ -159,6 +159,8 @@ namespace NBCBridge
                 if (!File.Exists(path)) return;
                 var incoming = Read(path);
                 var root = incoming.DocumentElement;
+                string target = root["RuntimeInstance"]?.InnerText;
+                if (!string.IsNullOrEmpty(target) && target != LifecycleBridge.Instance.Identity) return;
                 string token = root["Id"]?.InnerText + "/" + root["Revision"]?.InnerText;
                 if (token == seen) return;
                 Guid parsed;
@@ -166,7 +168,7 @@ namespace NBCBridge
                 string cancel = Path.Combine(exchange, "refit-cancel.xml");
                 if (File.Exists(cancel) && Read(cancel).DocumentElement["Id"]?.InnerText == root["Id"].InnerText) { seen = token; return; }
                 if (!patchesReady) throw new InvalidOperationException("Editor patches did not initialize; restart with the updated bridge");
-                if (File.Exists(Path.Combine(exchange, "request.xml"))) throw new InvalidOperationException("A battle request is also pending");
+                if (File.Exists(Path.Combine(exchange, "request.xml")) && Read(Path.Combine(exchange, "request.xml")).DocumentElement["RuntimeInstance"]?.InnerText == LifecycleBridge.Instance.Identity) throw new InvalidOperationException("A battle request is also pending");
                 if (!LifecycleBridge.Instance.Accept(root)) return;
                 request = incoming; id = root["Id"].InnerText; revision = int.Parse(root["Revision"].InnerText); seen = token;
                 folder = root["Directory"].InnerText;

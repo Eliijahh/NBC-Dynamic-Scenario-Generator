@@ -189,34 +189,6 @@ def discover(game):
     return result
 
 
-def generate_enemy(templates, faction, budget, seed=None):
-    rng = random.Random(seed)
-    candidates = [f for f in templates if f.faction == faction and f.ships and not f.root.findall("ModDependencies/unsignedLong")]
-    if not candidates:
-        raise ValueError("No stock enemy fleet templates found for that faction.")
-    # Random subsets of complete proven designs preserve missile/craft references.
-    options = []
-    for source in candidates:
-        for _ in range(12):
-            subset = rng.sample(range(len(source.ships)), rng.randint(1, len(source.ships)))
-            cost = sum(int(source.ships[i].findtext("Cost", "0")) for i in subset)
-            options.append((abs(cost - budget), rng.random(), source, subset))
-    _, _, source, subset = min(options, key=lambda x: x[:2])
-    enemy = source.clone()
-    container = enemy.root.find("Ships")
-    for i, ship in enumerate(list(container)):
-        if i not in subset:
-            container.remove(ship)
-        else:
-            put(ship, "Key", uuid.UUID(int=rng.getrandbits(128), version=4))
-    # Re-number after subset removal; unique names are required for report mapping.
-    for i, ship in enumerate(enemy.ships, 1):
-        put(ship, "Name", f"Hostile {i:02d}")
-    put(enemy.root, "Name", "NBC Opposing Force")
-    enemy._clear_formations()
-    enemy.validate()
-    return enemy, source.name
-
 
 class Campaign:
     def __init__(self, game=DEFAULT_GAME, data=None):
@@ -233,7 +205,7 @@ class Campaign:
         from .runtime import GameRuntime
         self.runtime = GameRuntime(self.game, self.exchange)
         self.player = Fleet(ET.fromstring(self.state["player_xml"])) if self.state.get("player_xml") else Fleet.load(self.data / "player.fleet") if (self.data / "player.fleet").exists() else None
-        self.enemy = Fleet.load(self.data / "enemy.fleet") if (self.data / "enemy.fleet").exists() else None
+        self.enemy = Fleet(ET.fromstring(self.state["enemy_xml"])) if self.state.get("enemy_xml") else Fleet.load(self.data / "enemy.fleet") if (self.data / "enemy.fleet").exists() else None
 
     @property
     def exchange(self):
@@ -249,9 +221,13 @@ class Campaign:
             self.persist()
             self.player.save(self.data / "player.fleet")
         if self.enemy:
+            self.state["enemy_xml"] = ET.tostring(self.enemy.root, encoding="unicode")
+            self.persist()
             self.enemy.save(self.data / "enemy.fleet")
 
     def prepare(self, publish=True):
+        if self.state.get("active_generation"):
+            raise ValueError("Wait for enemy generation or cancel it before launching a battle.")
         if self.state.get("active_refit"):
             raise ValueError("Finish or cancel the refit before launching a battle.")
         if self.state.get("active_battle"):
@@ -321,10 +297,11 @@ class Campaign:
         self.flush_ack()
         refit = self.state.get("active_refit")
         battle = self.state.get("active_battle")
-        active = refit or battle
+        generation = self.state.get("active_generation")
+        active = refit or battle or generation
         try:
             if active and active.get("launch_pending") and not self.runtime.purpose and not active.get("launch_error"):
-                self.runtime.begin("refit" if refit else "battle")
+                self.runtime.begin("refit" if refit else "generation" if generation else "battle")
             ready = self.runtime.poll()
         except Exception as exc:
             if active:
@@ -337,6 +314,9 @@ class Campaign:
         if refit:
             from .refit import RefitService
             RefitService(self)._request(refit)
+        elif generation:
+            from .generation import GenerationService
+            GenerationService(self).request(generation)
         else:
             root = read_xml(Path(active["directory"]) / "request.xml")
             put(root, "RuntimeInstance", self.runtime.instance)

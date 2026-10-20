@@ -32,7 +32,9 @@ namespace NBCBridge
             string target = request["RuntimeInstance"]?.InnerText;
             if (!string.IsNullOrEmpty(target) && target != Identity) return false;
             if (phase == "awaiting-ack" || phase == "quitting") return false;
-            phase = request.Name == "RefitRequest" ? "refit" : "battle";
+            string desired = request.Name == "RefitRequest" ? "refit" : request.Name == "GenerationRequest" ? "generation" : "battle";
+            if ((phase == "refit" || phase == "battle" || phase == "generation") && phase != desired) return false;
+            phase = desired;
             return true;
         }
 

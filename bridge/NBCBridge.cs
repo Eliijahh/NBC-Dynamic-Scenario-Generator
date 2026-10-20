@@ -28,6 +28,7 @@ namespace NBCBridge
             obj.AddComponent<LifecycleBridge>();
             obj.AddComponent<BattleBridge>();
             obj.AddComponent<RefitBridge>();
+            obj.AddComponent<GenerationBridge>();
             Debug.Log("[NBC] Campaign bridge loaded.");
         }
     }

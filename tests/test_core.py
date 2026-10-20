@@ -5,7 +5,8 @@ import unittest
 import uuid
 import xml.etree.ElementTree as ET
 
-from nbc.core import Campaign, Fleet, DEFAULT_GAME, discover, generate_enemy, put, write_xml
+from nbc.generation import select_generated_fleet
+from nbc.core import Campaign, Fleet, DEFAULT_GAME, discover, put, write_xml
 
 
 def sample(name="Test Fleet", faction="Stock/Alliance"):
@@ -72,13 +73,14 @@ class FleetTests(unittest.TestCase):
             f.validate()
 
     def test_enemy_seed_and_faction(self):
-        a, _ = generate_enemy([sample()], "Stock/Alliance", 350, seed=123)
-        b, _ = generate_enemy([sample()], "Stock/Alliance", 350, seed=123)
+        pool = sample()
+        a = select_generated_fleet(pool, 350, seed=123)
+        b = select_generated_fleet(pool, 350, seed=123)
         self.assertEqual(ET.tostring(a.root), ET.tostring(b.root))
         self.assertEqual(a.points, 350)
         a.validate()
         with self.assertRaises(ValueError):
-            generate_enemy([sample()], "Stock/Protectorate", 350)
+            select_generated_fleet(sample(), 0)
 
 
 class ExchangeTests(unittest.TestCase):
@@ -162,7 +164,7 @@ class InstalledFleetTests(unittest.TestCase):
                 self.assertEqual(fleet.faction, reloaded.faction)
                 self.assertEqual(fleet.points, reloaded.points)
         for faction in ("Stock/Alliance", "Stock/Protectorate"):
-            enemy, _ = generate_enemy(templates, faction, 700, 42)
+            enemy = select_generated_fleet(next(f for f in templates if f.faction == faction), 700, 42)
             enemy.validate()
             self.assertEqual(enemy.faction, faction)
 
