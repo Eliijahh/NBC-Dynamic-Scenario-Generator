@@ -1,0 +1,391 @@
+NBC DYNAMIC SCENARIO GENERATOR
+Campaign Command Functional Design Document
+A single-player campaign layer for NEBULOUS: Fleet Command
+
+
+OVERVIEW
+========
+
+Campaign Command turns unrelated NEBULOUS skirmishes into one continuous
+squadron command loop. The player keeps one named fleet and one shared pool of
+equipment, refits the fleet in the game's native editor, generates a random
+opponent, fights a normal local skirmish, and receives an automatic debrief.
+
+The app is the command post. NEBULOUS is the workshop and battlefield. The
+mod's job is continuity: the fleet maintained between battles is the fleet
+taken into the next one.
+
+    A persistent squadron-management wrapper that lets the player refit a
+    shared fleet in the native editor, generate a plausible opponent, fight
+    a real skirmish, and keep the aftermath.
+
+The player installs the NBC Campaign Bridge once, enables it in Mods, and then
+works mainly from Campaign Command. This describes the mod as built; future
+ideas are marked and are not commitments.
+
+
+DESIGN PILLARS
+==============
+
+  - Continuity: ships keep names, identities, loadouts and history. The fleet
+    is the main character, so changes are explicit and reversible until
+    committed.
+  - Native authority: fitting rules, costs and validation stay in the game.
+    The app manages ownership and campaign state, not ship design.
+  - Parts, not prices: equipment is physical and shared. A part removed from
+    one ship can go onto another. There is no money or shipyard.
+  - Safe commitment: a refit is a draft until confirmed. The player can review,
+    continue editing or cancel and keep the approved fleet.
+  - Player command, game combat: the mod prepares the context; the player
+    deploys, manoeuvres and fights.
+  - Visible state: the player knows the phase, what is pending and what to do
+    next. Limits are stated plainly and errors name the recovery action.
+
+
+PLAYER EXPERIENCE
+=================
+
+The player commands a small squadron, not an empire or factory. They decide
+which ship gets the last working sensor, who signs off on a risky refit, and
+who reads the report afterwards. The fantasy is competence under constraint: a
+small, familiar force where every ship has a name and every part a history.
+
+Goals: ownership, continuity, safe experimentation, native fidelity, and a flow
+that needs no file management. The player should also be told what the
+prototype does and does not model.
+
+Non-goals: a 4X campaign, economic simulation, autobattler, multiplayer
+campaign or scenario editor. It is not a replacement for the native editor.
+
+
+CORE LOOP
+=========
+
+    Fleet roster -> Inventory -> Native refit -> Enemy generation
+        -> Live battle -> Debrief -> back to fleet
+
+The refit micro-loop is: remove a part, see it become available, install it on
+another ship, review the changes, then confirm or continue editing. The shared
+pool turns fitting into a squadron-level decision.
+
+The meta loop is: maintain the fleet, choose opposition, fight, read the
+debrief, adjust for the next engagement. It currently has no rewards, losses,
+repairs or resource pressure.
+
+
+FLEET ROSTER
+============
+
+ACTIONS: Load a template, import or export a .fleet, create a disposable
+three-ship test fleet, rename ships, edit hull numbers, inspect equipment and
+start a refit. The app has five tabs: Fleet, Inventory, Refit, Battle, Debrief.
+
+RULES
+  - 1 to 10 ships; unique, non-empty names; unique identities and valid hulls.
+  - Names must be unique because native reports identify ships by name.
+  - Imported fleets are validated before becoming the campaign fleet.
+  - Hull, faction and ship identity cannot change during a refit, and roster
+    changes are locked.
+  - Replacing the roster with the test fleet backs up the previous one.
+
+INTENT: The fleet is the campaign's main character. Names and hull numbers are
+the player's anchors, so they are editable outside the editor, while fitting
+stays native. The app offers only identity editing to avoid teaching two
+versions of the rules. The test fleet is an onboarding sandbox, not an
+acquisition path.
+
+LIMITS: No ship acquisition, crew management, veterancy or condition. Hull
+changes require choosing another design. Imported designs may carry cached
+points until the game recalculates them.
+
+
+INVENTORY
+=========
+
+ACTIONS: Browse the game-exported catalogue, see installed and spare counts,
+acquire spares, release spares, check ownership before a refit.
+
+RULES
+  - Store stock is unlimited; there is no currency, price, installation cost
+    or shipyard requirement.
+  - Acquiring adds spares; releasing removes spares only. Installed components
+    must be refitted out and confirmed before they can be released.
+  - Quantity per transaction is 1 to 999.
+  - Acquiring requires the component to be in the game's catalogue.
+  - Inventory is locked while a refit, battle or generation is pending.
+  - Purchases made before a refit survive cancellation.
+
+SUPPLY MODEL: total owned = installed on ships + spare units in the warehouse.
+A refit may use installed parts and spares, but never more of a component than
+the fleet owns. Removing a part makes it available elsewhere; installing
+consumes a spare; leaving a part removed turns it into a spare on confirmation.
+
+INTENT: The inventory makes equipment feel physical and shared, creating
+cross-ship decisions without currency. Money is deferred until the refit and
+ownership pipeline is proven.
+
+CURRENT TENSION: Because stock is unlimited and free, this is a bookkeeping
+constraint, not an economy. The real constraint is the native editor: sockets,
+power, crew, magazines and warnings. This is the largest open question.
+
+
+NATIVE REFIT
+============
+
+FLOW
+  1. Start a refit from Fleet or Refit.
+  2. The game launches and opens the whole fleet in the normal editor.
+  3. Remove, install and rearrange components across ships.
+  4. Use the in-game overlay to review the refit.
+  5. Inspect the changes in Campaign Command.
+  6. Confirm, continue editing, or cancel.
+
+IN-GAME CAMPAIGN RULES
+  - The palette shows only usable equipment and current spare counts.
+  - Removing a part makes it available to the rest of the fleet immediately.
+  - Installing consumes a spare or a part freed elsewhere.
+  - Native socket, power, crew, magazine and warning rules still apply.
+  - Undo/redo is blocked if it would duplicate or over-allocate a part.
+  - Whole-fitting paste, roster changes and fleet load/save are disabled.
+  - Leaving the editor is intercepted so the player can review or discard.
+
+DRAFT, REVIEW, COMMIT
+    Confirm refit      Validate, reconcile inventory, commit fleet and spares.
+    Continue editing   Open a new revision from the draft or last input; the
+                       approved fleet remains unchanged.
+    Cancel refit       Discard the session; approved fleet and pre-refit
+                       spares remain.
+
+Review lists equipment changes by ship and socket, plus identity changes, and
+shows the spares that will remain. Confirmation is only available from review.
+Resuming after review opens the exported draft; resuming before review opens
+the last input. Unsaved editor changes are lost on a crash.
+
+INTENT: The native editor is the best fitting interface and the one the player
+already knows. Wrapping it keeps the game's rules authoritative. The shared
+pool turns single-ship editing into a squadron puzzle: stripping a part changes
+what every other ship can mount.
+
+LIMITS: Refits require launching the game and waiting. Only one refit can be
+active, and only one app window may edit a save directory. There are no refit
+costs, times, facilities or engineering risks. Confirmation is deliberately an
+external action.
+
+
+ENEMY GENERATION
+================
+
+FLOW: Choose Protectorate or Alliance, set a target from 1 to 30,000 points
+(default 700), generate, inspect the roster, and reroll before launch if
+desired. Cancelling preserves the previous enemy; a completed generation
+replaces it.
+
+RULES
+  - Stock hulls and components for the chosen faction, fitted by the game from
+    bare hulls using real rules.
+  - The game ensures essential systems, weapons, ammunition, crew, power and
+    design warnings are valid before a candidate is accepted.
+  - Up to 20 valid designs are produced, with a hard limit of 240 attempts.
+  - The app selects up to 10 ships closest to the target budget and renames
+    them "Hostile 01", "Hostile 02", and so on.
+  - The actual total may differ from the target. The target is an aim, not a
+    guarantee.
+
+INTENT: Random generation gives replayability without hand-authored lists.
+Because the game fits and validates the ships, the opponent is plausible under
+the same rules the player uses. The budget is the main difficulty dial; faction
+changes the available pool. The generator does not counter the player's fleet.
+
+LIMITS: No difficulty presets, doctrines or enemy personalities. No relationship
+between enemy budget and player fleet points. No rewards or campaign
+consequences. One AI fleet on the default map. Stock content only. Rerolling
+costs time because it launches the game.
+
+
+BATTLE AND DEBRIEF
+==================
+
+FLOW
+  1. Confirm fleet and enemy.
+  2. Click "Run battle -> NEBULOUS".
+  3. The game launches, or an existing game at the main menu is reused.
+  4. The mod creates a local single-player skirmish, assigns both fleets,
+     validates the settings, and launches.
+  5. The player deploys and fights normally.
+  6. When the battle ends, the report is imported automatically and the app
+     brings the debrief forward.
+
+GUARANTEES
+  - A normal local skirmish, not a custom combat simulation.
+  - Player fleet versus one AI enemy, with deployment and tactics under player
+    control.
+  - The game's default map and scenario.
+  - An existing editor or battle is left alone; the mod waits for the main menu.
+  - Incompatible fleets, missing mods and missing components are reported before
+    launch.
+  - If the game does not retain the fleet assignments, the mod reports an error.
+  - A failed save or import leaves the game open.
+  - Cancelling tracking never terminates a live game.
+  - Shutdown follows a safely received result, or an idle game the campaign
+    launched and the player cancelled. No live game is force-killed.
+
+DEBRIEF: Shows outcome, duration, per-ship side, status, condition, crew and
+damage dealt. History persists by unique battle ID. Raw reports and input fleets
+are archived. Duplicate imports are prevented; unknown or duplicate player ships
+are rejected. Cancelled battles produce no result.
+
+INTENT: The handoff removes file management from the routine. The mod prepares
+a validated match and then lets the player play the game. The debrief provides
+closure and records the data needed for future consequences.
+
+LIMITS: One map, one AI opponent, no objectives or scripted events, no
+multiplayer, one pending battle at a time. The game must be at the main menu.
+Startup can take minutes. A battle that closes without a report cannot produce
+a debrief.
+
+Damage and casualties are recorded but not applied to future battles. There are
+no repairs, permanent losses, rewards, reputation or experience. The debrief
+does not yet change campaign state beyond history and stored ship results.
+
+
+PROGRESSION AND PERSISTENCE
+===========================
+
+Progress is horizontal and logistical: fleet composition, ship names and
+identities, shared spares, refit record, battle history and stored per-ship
+results. There is no level, currency, technology tree or reputation.
+
+The approved fleet and inventory survive restarts. Pending refits, battles and
+generations are remembered and resumable. Purchases made before a session
+survive cancellation. The approved fleet changes only when a refit is confirmed.
+One app window edits a given save directory at a time.
+
+CURRENT GAP: There is no mechanical reason to win or lose beyond the player's
+goals. Battles do not consume resources, grant rewards, damage the fleet or
+change the enemy pool. The campaign is a continuity scaffold, not yet a complete
+game loop with stakes.
+
+
+UX AND FEEDBACK
+===============
+
+The app is a command console: dark background, teal accent, numbered tabs,
+uppercase labels and terse operational copy. The player is treated as a
+commander who wants the next action.
+
+Feedback is layered: a status line for the current phase or error; an in-game
+overlay for inventory, review/cancel and blocked actions; confirmations for
+destructive actions; and automatic focus plus a bell when a draft or debrief is
+ready. Conflicting actions are disabled, errors name the recovery step, and the
+player is never silently moved to another fleet, battle or revision.
+
+The main friction is bridge setup, game launch time, knowing that confirmation
+happens outside the game, and watching two applications. Status, resume and
+reuse of an already-open game mitigate this but do not remove it.
+
+
+BALANCE AND CONTENT
+===================
+
+TUNING SNAPSHOT
+    Fleet size                     1 to 10 ships
+    Enemy target budget            1 to 30,000 points; default 700
+    Buy/sell quantity              1 to 999 units
+    Enemy candidate pool           up to 20 valid designs, 240 attempts
+    Enemy selection                up to 10 ships, closest to budget
+    Hull eligibility               stock hulls at or below max(150, budget)
+    Refit revisions                unlimited through resume, one at a time
+    Store stock / currency         unlimited / none
+    Refit cost / repairs / losses  none
+
+Difficulty comes from enemy faction, target points, the player's fleet
+composition and how much inventory they commit to each ship. There is no hidden
+scaling; the enemy is not matched to the player's points and does not counter
+their loadout.
+
+Scarcity currently comes from owned part quantities, socket compatibility, hull
+limits, power and crew budgets, opportunity cost when moving a part, and
+patience. It does not come from money, storage, maintenance, refit time or loss.
+Free purchasing makes the inventory a ledger rather than an economy.
+
+CONTENT: Two stock factions, installed and imported fleets, stock components,
+the three-ship Raines test fleet, one default skirmish map, generated enemies and
+an open-ended chain of battles. No authored missions, objectives, narrative,
+territory, calendar or progression content. No multiplayer, tactical automation,
+map selection, repairs, damage carryover or economy.
+
+
+OPEN QUESTIONS
+==============
+
+  - Where does scarcity come from? Free stock removes economic pressure.
+    Directions: requisition points, limited stock, salvage, maintenance or
+    refit time.
+  - Why fight? Battles grant no resources, reputation or permanent change.
+    Directions: salvage, currency, ship experience, faction standing or
+    survival pressure.
+  - Should damage persist? The debrief records condition, crew and damage, but
+    the next battle ignores it. Applying it and adding repairs would give
+    battles weight.
+  - Is the native editor too heavy? Launching the game for every refit is slow.
+    Options: batch refits, a planning view that does not replace native
+    validation, or quick swaps for owned parts.
+  - How should difficulty be expressed? Enemy budget is self-selected and
+    unrelated to player strength. Consider suggested budgets, presets,
+    doctrines or missions with fixed opposition.
+  - Does "buy/sell" mislead? The words imply an economy that does not exist.
+    Rename to "Requisition" and "Release", or add a real cost.
+
+
+FUTURE DIRECTIONS
+=================
+
+NEAR-TERM: Apply damage and casualties to the next battle; add repairs, salvage
+or rewards; add requisition pressure; rename buy/sell if no economy is added;
+add difficulty presets and a first-run checklist.
+
+MEDIUM-TERM: Ship histories and veterancy, permanent losses and replacement
+hulls, limited supply, refit time and maintenance, enemy doctrines, mission
+objectives and a campaign calendar.
+
+LONG-TERM: Authored chapters, faction relationships, territory or supply lines,
+multi-battle operations, richer after-action narrative, and optional multiplayer
+only after single-player is stable.
+
+GUARDRAILS: The game remains the authority on fitting and combat. The player
+remains in command. A draft is never committed without confirmation. No approved
+fleet or inventory is lost to a failed operation. New systems must justify their
+complexity in the core loop.
+
+
+ACCEPTANCE CRITERIA
+===================
+
+  - A new player can complete fleet -> inventory -> refit -> battle -> debrief
+    without manually editing campaign files.
+  - The player can explain why a component is unavailable and distinguish
+    Confirm, Continue and Cancel.
+  - Cancelling a refit, generation or battle never loses the approved fleet.
+  - The fleet never owns more copies of a component than the player owns, and
+    undo cannot duplicate equipment.
+  - A refit cannot change faction, hull or ship identities.
+  - A battle report cannot be imported twice or silently add unknown ships.
+  - The fleet feels persistent, refitting feels native, and the enemy feels like
+    a plausible product of the same rules.
+  - The debrief arrives automatically and the player always has a visible next
+    action or waiting reason.
+  - Closing and reopening the app preserves the approved fleet, inventory and
+    pending operations; a failed save leaves the previous state intact.
+  - No live game is force-closed while it may contain unsaved work.
+
+
+FINAL STATEMENT
+===============
+
+    Give the player one fleet they can keep, one shared toolbox they must
+    allocate, and one native editor where the rules still matter. Make the
+    refit a draft, make the battle real, and make the aftermath automatic.
+
+The build delivers continuity and the safe refit loop. It does not yet deliver
+scarcity, consequence or reward. Those are the next design problems, and the
+existing debrief and inventory systems are the foundation for them.
