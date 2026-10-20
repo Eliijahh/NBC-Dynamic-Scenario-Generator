@@ -30,8 +30,9 @@ DESIGN PILLARS
   - Continuity: ships keep names, identities, loadouts and history. The fleet
     is the main character, so changes are explicit and reversible until
     committed.
-  - Native authority: fitting rules, costs and validation stay in the game.
-    The app manages ownership and campaign state, not ship design.
+  - Native fidelity: refits use the game's native editor, and generated
+    enemies are fitted from rules and stock data exported by the game. The app
+    manages ownership and campaign state without inventing part statistics.
   - Parts, not prices: equipment is physical and shared. A part removed from
     one ship can go onto another. There is no money or shipyard.
   - Safe commitment: a refit is a draft until confirmed. The player can review,
@@ -112,7 +113,7 @@ RULES
     must be refitted out and confirmed before they can be released.
   - Quantity per transaction is 1 to 999.
   - Acquiring requires the component to be in the game's catalogue.
-  - Inventory is locked while a refit, battle or generation is pending.
+  - Inventory is locked while a refit or battle is pending.
   - Purchases made before a refit survive cancellation.
 
 SUPPLY MODEL: total owned = installed on ships + spare units in the warehouse.
@@ -125,8 +126,10 @@ cross-ship decisions without currency. Money is deferred until the refit and
 ownership pipeline is proven.
 
 CURRENT TENSION: Because stock is unlimited and free, this is a bookkeeping
-constraint, not an economy. The real constraint is the native editor: sockets,
-power, crew, magazines and warnings. This is the largest open question.
+constraint, not an economy. The real constraint is fitting: sockets, power,
+crew, magazines and warnings. Refits get those rules from the native editor;
+generated enemies get them from the bridge-exported catalogue and the offline
+fitter. Keeping the two paths in agreement is the main fitting risk.
 
 
 NATIVE REFIT
@@ -177,29 +180,46 @@ ENEMY GENERATION
 
 FLOW: Choose Protectorate or Alliance, set a target from 1 to 30,000 points
 (default 700), generate, inspect the roster, and reroll before launch if
-desired. Cancelling preserves the previous enemy; a completed generation
-replaces it.
+desired. Generation is local and synchronous: it does not open the fleet editor
+or launch the game. A completed generation replaces the previous enemy.
+
+CATALOGUE: On startup the bridge exports Format 1 stock fitting data to
+Saves/NBCBridge/fitting-catalog.xml. It contains faction hulls and sockets;
+component sizes, socket types, overhang and rotation rules, tiling, point and
+compounding costs, crew, resources and role flags; bulk-magazine capacity and
+accepted ammunition; weapon compatibility; and munition volume and point data.
+The bridge remains the source of the numbers. Python does not guess part stats.
 
 RULES
-  - Stock hulls and components for the chosen faction, fitted by the game from
-    bare hulls using real rules.
-  - The game ensures essential systems, weapons, ammunition, crew, power and
-    design warnings are valid before a candidate is accepted.
-  - Up to 20 valid designs are produced, with a hard limit of 240 attempts.
+  - Stock hulls, components and munitions for the chosen faction only.
+  - The fitter installs a drive, powerplant, command module, sensor, at least
+    one offensive direct-fire weapon, and a bulk magazine when ammunition is
+    needed. It fills most remaining sockets with plausible support systems,
+    weapons or defences.
+  - Socket type, dimensions, overhang and rotation must pass the native fit
+    test. Tiled compartments multiply volume, cost and per-unit resources.
+  - Power must balance. Crew uses the hull complement as a soft limit. Ammo is
+    limited by magazine volume and point cost.
+  - Missile launchers, hangars, craft and missile ammunition are excluded in
+    this version.
+  - Up to 24 candidate ships are produced, with a hard limit of 192 attempts.
   - The app selects up to 10 ships closest to the target budget and renames
     them "Hostile 01", "Hostile 02", and so on.
   - The actual total may differ from the target. The target is an aim, not a
     guarantee.
 
 INTENT: Random generation gives replayability without hand-authored lists.
-Because the game fits and validates the ships, the opponent is plausible under
-the same rules the player uses. The budget is the main difficulty dial; faction
-changes the available pool. The generator does not counter the player's fleet.
+Using the game's exported fitting data keeps the opponent plausible under the
+same rules the player uses, while avoiding the slow and fragile editor-launch
+loop. The budget is the main difficulty dial; faction changes the available
+pool. The generator does not counter the player's fleet.
 
 LIMITS: No difficulty presets, doctrines or enemy personalities. No relationship
 between enemy budget and player fleet points. No rewards or campaign
-consequences. One AI fleet on the default map. Stock content only. Rerolling
-costs time because it launches the game.
+consequences. One AI fleet on the default map. Stock content only. v1 has no
+missiles, hangars, craft, refit-time or ammunition inventory tracking. Native
+revalidation still happens when the battle handoff loads the fleets; a generated
+design that the game rejects must be regenerated.
 
 
 BATTLE AND DEBRIEF
@@ -255,10 +275,10 @@ Progress is horizontal and logistical: fleet composition, ship names and
 identities, shared spares, refit record, battle history and stored per-ship
 results. There is no level, currency, technology tree or reputation.
 
-The approved fleet and inventory survive restarts. Pending refits, battles and
-generations are remembered and resumable. Purchases made before a session
-survive cancellation. The approved fleet changes only when a refit is confirmed.
-One app window edits a given save directory at a time.
+The approved fleet and inventory survive restarts. Pending refits and battles
+are remembered and resumable; enemy generation commits immediately. Purchases
+made before a session survive cancellation. The approved fleet changes only when
+a refit is confirmed. One app window edits a given save directory at a time.
 
 CURRENT GAP: There is no mechanical reason to win or lose beyond the player's
 goals. Battles do not consume resources, grant rewards, damage the fleet or
@@ -291,9 +311,9 @@ TUNING SNAPSHOT
     Fleet size                     1 to 10 ships
     Enemy target budget            1 to 30,000 points; default 700
     Buy/sell quantity              1 to 999 units
-    Enemy candidate pool           up to 20 valid designs, 240 attempts
+    Enemy candidate pool           up to 24 valid designs, 192 attempts
     Enemy selection                up to 10 ships, closest to budget
-    Hull eligibility               stock hulls at or below max(150, budget)
+    Hull eligibility               stock hulls at or below max(200, budget)
     Refit revisions                unlimited through resume, one at a time
     Store stock / currency         unlimited / none
     Refit cost / repairs / losses  none
@@ -327,9 +347,14 @@ OPEN QUESTIONS
   - Should damage persist? The debrief records condition, crew and damage, but
     the next battle ignores it. Applying it and adding repairs would give
     battles weight.
-  - Is the native editor too heavy? Launching the game for every refit is slow.
-    Options: batch refits, a planning view that does not replace native
-    validation, or quick swaps for owned parts.
+  - Is the native editor too heavy for refits? Launching the game for every
+    refit is slow. Options: batch refits, a planning view that does not replace
+    native validation, or quick swaps for owned parts. Enemy generation no
+    longer launches the game.
+  - Does the offline fitter drift from the native rules? The bridge exports
+    fitting data, but Python reproduces selection, resources, tiling and costs.
+    Options: add a bridge-side validation pass, compare generated fits against
+    the editor, or keep a curated regression catalogue from a known game build.
   - How should difficulty be expressed? Enemy budget is self-selected and
     unrelated to player strength. Consider suggested budgets, presets,
     doctrines or missions with fixed opposition.
@@ -365,7 +390,8 @@ ACCEPTANCE CRITERIA
     without manually editing campaign files.
   - The player can explain why a component is unavailable and distinguish
     Confirm, Continue and Cancel.
-  - Cancelling a refit, generation or battle never loses the approved fleet.
+  - Cancelling a refit or battle never loses the approved fleet; regenerating
+    an enemy never damages the player fleet.
   - The fleet never owns more copies of a component than the player owns, and
     undo cannot duplicate equipment.
   - A refit cannot change faction, hull or ship identities.

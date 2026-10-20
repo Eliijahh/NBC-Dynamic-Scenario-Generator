@@ -128,7 +128,7 @@ class App(tk.Tk):
         self.build_refit_tabs()
 
         ttk.Label(self.battle_tab, text="Prepare an engagement", style="Sub.TLabel").pack(anchor="w")
-        ttk.Label(self.battle_tab, text="Build randomly fitted ships near your target budget. NEBULOUS opens briefly to fit and validate them.", style="Muted.TLabel").pack(anchor="w", pady=8)
+        ttk.Label(self.battle_tab, text="Build randomly fitted ships near your target budget. Ships are fitted offline from the native catalogue exported by NEBULOUS.", style="Muted.TLabel").pack(anchor="w", pady=8)
         controls = ttk.Frame(self.battle_tab)
         controls.pack(fill="x", pady=12)
         self.faction = ttk.Combobox(controls, state="readonly", values=["Stock/Protectorate", "Stock/Alliance"], width=23)
@@ -147,7 +147,7 @@ class App(tk.Tk):
         self.run_button = ttk.Button(launchbar, text="Run battle  →  NEBULOUS", style="Accent.TButton", command=self.launch)
         self.run_button.pack(side="left")
         ttk.Button(launchbar, text="Cancel pending request", command=self.cancel).pack(side="left", padx=12)
-        ttk.Label(self.battle_tab, text="First run: install the bridge, then enable “NBC Campaign Bridge” in the game's Mods menu.\nThe bridge creates a local skirmish and assigns both fleets. You choose deployment and play.\nResults appear here automatically when the battle ends. Damage is recorded for review; it is not restored in the next battle yet.", style="Muted.TLabel", wraplength=1050).pack(anchor="w")
+        ttk.Label(self.battle_tab, text="First run: install the bridge, launch NEBULOUS once with “NBC Campaign Bridge” enabled, then return here.\nThe bridge exports the fitting catalogue and creates local skirmishes. You choose deployment and play.\nResults appear here automatically when the battle ends. Damage is recorded for review; it is not restored in the next battle yet.", style="Muted.TLabel", wraplength=1050).pack(anchor="w")
 
         ttk.Label(self.result_tab, text="Battle history", style="Sub.TLabel").pack(anchor="w", pady=(0, 12))
         self.history = self.tree(self.result_tab, ("time", "outcome", "duration", "id"), ("ENGAGEMENT", "OUTCOME", "SECONDS", "BATTLE ID"), (230, 140, 100, 330), height=5)
@@ -210,10 +210,10 @@ class App(tk.Tk):
             catalog = self.refits.catalog()
             owned = self.campaign.state["inventory"]
             fitted = installed(self.campaign.player) if self.campaign.player else {}
-            locked = bool(self.refits.active or self.campaign.state.get("active_battle") or self.generation.active)
+            locked = bool(self.refits.active or self.campaign.state.get("active_battle"))
             self.buy_button.configure(state="disabled" if locked or not catalog else "normal")
             self.sell_button.configure(state="disabled" if locked else "normal")
-            self.inventory_note.set("Inventory locked until the pending refit/battle finishes." if locked else f"{sum(owned.values())} spare components owned. " + (f"{len(catalog)} stock components exported by NEBULOUS." if catalog else "Start NEBULOUS with bridge 0.2 to export the component catalogue."))
+            self.inventory_note.set("Inventory locked until the pending refit/battle finishes." if locked else f"{sum(owned.values())} spare components owned. " + (f"{len(catalog)} stock components exported by NEBULOUS." if catalog else "Start NEBULOUS with bridge 0.5.0 to export the component catalogue."))
             query = self.catalog_search.get().casefold()
             entries = {k: v for k, v in catalog.items()}
             for key in owned.keys() | fitted.keys():
@@ -246,7 +246,7 @@ class App(tk.Tk):
 
     def refresh_refit(self):
         active = self.refits.active
-        busy = bool(active or self.campaign.state.get("active_battle") or self.generation.active)
+        busy = bool(active or self.campaign.state.get("active_battle"))
         self.refit_start_button.configure(state="disabled" if busy else "normal")
         self.refit_resume_button.configure(state="normal" if active else "disabled")
         self.refit_cancel_button.configure(state="normal" if active else "disabled")
@@ -363,8 +363,8 @@ class App(tk.Tk):
         self.history.delete(*self.history.get_children())
         for b in reversed(self.campaign.state["battles"]):
             self.history.insert("", "end", iid=b["id"], values=(b["created"][:19].replace("T", " ") + " UTC", b.get("outcome", b["status"]), b.get("duration", "—"), b["id"]))
-        self.run_button.configure(state="disabled" if self.campaign.state.get("active_battle") or self.refits.active or self.generation.active else "normal")
-        self.generate_button.configure(state="disabled" if self.campaign.state.get("active_battle") or self.refits.active or self.generation.active else "normal")
+        self.run_button.configure(state="disabled" if self.campaign.state.get("active_battle") or self.refits.active else "normal")
+        self.generate_button.configure(state="disabled" if self.campaign.state.get("active_battle") or self.refits.active else "normal")
         self.refresh_inventory()
         self.refresh_refit()
 
@@ -443,9 +443,9 @@ class App(tk.Tk):
             budget = int(self.budget.get())
             if not 1 <= budget <= 30000:
                 raise ValueError("Choose a target from 1 to 30,000 points.")
-            self.generation.start(self.templates, self.faction.get(), budget)
+            record = self.generation.start(self.faction.get(), budget)
             self.refresh()
-            self.status.set("Opening NEBULOUS to build random ship fittings…")
+            self.status.set(f"Randomly fitted enemy ready: {record['ships']} ships / {record['actual_points']:,} points.")
         self.guarded(action)
 
     def launch(self):
@@ -456,11 +456,6 @@ class App(tk.Tk):
         self.guarded(action)
 
     def cancel(self):
-        if self.generation.active:
-            self.guarded(self.generation.cancel)
-            self.refresh()
-            self.status.set("Enemy generation cancelled. Previous enemy fleet preserved.")
-            return
         if self.campaign.state.get("active_battle") and messagebox.askyesno("Cancel battle request", "Stop tracking this battle? The game will stay open. No result or reward will be applied."):
             self.guarded(self.campaign.cancel)
             self.refresh()
@@ -470,19 +465,6 @@ class App(tk.Tk):
             self.campaign.pump_game()
             if self.campaign.runtime.purpose:
                 self.status.set(self.campaign.runtime.message)
-            if self.generation.active:
-                if self.generation.collect():
-                    self.refresh()
-                    self.tabs.select(self.battle_tab)
-                    self.deiconify()
-                    self.lift()
-                    self.attributes("-topmost", True)
-                    self.after(700, lambda: self.attributes("-topmost", False))
-                    self.focus_force()
-                    self.status.set(f"Randomly fitted enemy ready: {len(self.campaign.enemy.ships)} ships / {self.campaign.enemy.points:,} points.")
-                else:
-                    self.status.set(self.generation.status())
-                    self.enemy_info.configure(text=self.generation.status())
             if self.refits.active:
                 changed = self.refits.collect()
                 if changed:

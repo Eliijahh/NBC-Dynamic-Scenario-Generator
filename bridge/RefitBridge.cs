@@ -49,7 +49,16 @@ namespace NBCBridge
                 new Harmony("nbc.campaign.refit.v1").PatchAll(typeof(RefitBridge).Assembly);
                 patchesReady = true;
                 ExportCatalog();
-                Status("Refit bridge ready. Component catalogue exported.");
+                var fittingCatalogExported = false;
+                try
+                {
+                    FittingCatalog.Export(exchange);
+                    fittingCatalogExported = true;
+                }
+                catch (Exception catalogError) { Debug.LogError("[NBC Fitting Catalog] " + catalogError); }
+                Status(fittingCatalogExported
+                    ? "Refit bridge ready. Fitting catalogue exported."
+                    : "Refit bridge ready. Fitting catalogue export failed; see Player.log.");
             }
             catch (Exception ex) { Fail(ex); }
         }

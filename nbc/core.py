@@ -202,6 +202,9 @@ class Campaign:
         self.state.setdefault("inventory", {})
         self.state.setdefault("active_refit", None)
         self.state.setdefault("refits", [])
+        # Generation is offline now. Drop a pending editor-generation request
+        # left behind by an older campaign save.
+        self.state.pop("active_generation", None)
         from .runtime import GameRuntime
         self.runtime = GameRuntime(self.game, self.exchange)
         self.player = Fleet(ET.fromstring(self.state["player_xml"])) if self.state.get("player_xml") else Fleet.load(self.data / "player.fleet") if (self.data / "player.fleet").exists() else None
@@ -226,8 +229,6 @@ class Campaign:
             self.enemy.save(self.data / "enemy.fleet")
 
     def prepare(self, publish=True):
-        if self.state.get("active_generation"):
-            raise ValueError("Wait for enemy generation or cancel it before launching a battle.")
         if self.state.get("active_refit"):
             raise ValueError("Finish or cancel the refit before launching a battle.")
         if self.state.get("active_battle"):
@@ -297,11 +298,10 @@ class Campaign:
         self.flush_ack()
         refit = self.state.get("active_refit")
         battle = self.state.get("active_battle")
-        generation = self.state.get("active_generation")
-        active = refit or battle or generation
+        active = refit or battle
         try:
             if active and active.get("launch_pending") and not self.runtime.purpose and not active.get("launch_error"):
-                self.runtime.begin("refit" if refit else "generation" if generation else "battle")
+                self.runtime.begin("refit" if refit else "battle")
             ready = self.runtime.poll()
         except Exception as exc:
             if active:
@@ -314,9 +314,6 @@ class Campaign:
         if refit:
             from .refit import RefitService
             RefitService(self)._request(refit)
-        elif generation:
-            from .generation import GenerationService
-            GenerationService(self).request(generation)
         else:
             root = read_xml(Path(active["directory"]) / "request.xml")
             put(root, "RuntimeInstance", self.runtime.instance)

@@ -66,8 +66,8 @@ class RefitService:
         return result
 
     def ensure_idle(self):
-        if self.active or self.c.state.get("active_battle") or self.c.state.get("active_generation"):
-            raise ValueError("Finish or cancel the pending battle, refit or generation first.")
+        if self.active or self.c.state.get("active_battle"):
+            raise ValueError("Finish or cancel the pending battle or refit first.")
 
     def trade(self, key, quantity, buy=True):
         self.ensure_idle()

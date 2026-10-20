@@ -43,3 +43,11 @@ Live checks use the separate `data/lifecycle-test-2026-10-20` save; the default 
 5. Generate a 780-point Protectorate enemy and run a battle with NEBULOUS closed. The game launched, configured the three-frigate player fleet against three enemies, and reached deployment. A disposable surrender produced the full native report and all six ship records; the app opened Debrief and NEBULOUS exited normally. Battle `30b554b4-accb-4789-ba60-9b8df6617d43`. This verifies completion/report handoff, not a full combat engagement.
 
 The previous bridge 0.2 checks above remain historical evidence of inventory/editor behavior; their main-menu-only return behavior is superseded by acknowledged automatic shutdown.
+
+## Offline fitting update — bridge 0.5.0
+
+The Python suite now contains 55 passing tests. New coverage includes parsing Format 1 fitting data, socket type/size/rotation/overhang checks, tiled cost and magazine volume, compounding-cost ordering, ammunition loading, EWar/sensor role classification, exclusion of missiles/hangars/oversized parts, deterministic generation, budget selection, and the generation service committing an enemy without launching the game or setting a runtime purpose. The optional installed-catalogue test also fits both stock factions from the real export when it is present. Bridge 0.5 compiles against the installed game assemblies.
+
+Live check on 20 October 2026: bridge 0.5 exported a 351,578-byte `Saves/NBCBridge/fitting-catalog.xml` with 7 hulls and 91-93 components per stock faction. A generated three-ship, 3,000-point Alliance fleet then loaded through the normal battle handoff against the current `TF Ash` starter fleet and reached `ChooseSpawn`; the game logged no point-cost discrepancy. The test was closed at deployment, so this verifies catalogue export, generated fleet loading, cost agreement and lobby assignment, not a completed generated-fleet battle. An older `Double Raines` saved fleet failed first because it contains the removed `Stock/Berthing` component; that is a stale player-fleet issue, not a generated-fleet failure.
+
+The v1 fitter supports direct-fire weapons and bulk-magazine ammunition only; missile launchers, hangars and craft are excluded.
