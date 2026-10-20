@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import random
-import subprocess
 import uuid
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -231,6 +230,8 @@ class Campaign:
         self.state.setdefault("inventory", {})
         self.state.setdefault("active_refit", None)
         self.state.setdefault("refits", [])
+        from .runtime import GameRuntime
+        self.runtime = GameRuntime(self.game, self.exchange)
         self.player = Fleet(ET.fromstring(self.state["player_xml"])) if self.state.get("player_xml") else Fleet.load(self.data / "player.fleet") if (self.data / "player.fleet").exists() else None
         self.enemy = Fleet.load(self.data / "enemy.fleet") if (self.data / "enemy.fleet").exists() else None
 
@@ -250,7 +251,7 @@ class Campaign:
         if self.enemy:
             self.enemy.save(self.data / "enemy.fleet")
 
-    def prepare(self):
+    def prepare(self, publish=True):
         if self.state.get("active_refit"):
             raise ValueError("Finish or cancel the refit before launching a battle.")
         if self.state.get("active_battle"):
@@ -276,7 +277,9 @@ class Campaign:
         self.state["active_battle"] = record
         self.persist()
         try:
-            write_xml(self.exchange / "request.xml", request)
+            write_xml(archive / "request.xml", request)
+            if publish:
+                write_xml(self.exchange / "request.xml", request)
         except Exception:
             self.state["active_battle"] = None
             self.persist()
@@ -284,20 +287,69 @@ class Campaign:
         return record
 
     def launch(self):
-        if not (self.game / "Mods" / "NBCBridge" / "NBCBridge.dll").is_file():
-            raise ValueError("Install the bridge first using Install Bridge.ps1, then enable NBC Campaign Bridge in the game's Mods menu.")
-        record = self.prepare()
+        record = self.prepare(publish=False)
+        record["launch_pending"] = True
+        self.persist()
         try:
-            # Reuse an existing game process; the loaded bridge polls for requests.
-            running = subprocess.run(["tasklist", "/FI", "IMAGENAME eq Nebulous.exe", "/FO", "CSV", "/NH"], capture_output=True, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            if '"nebulous.exe"' not in running.stdout.lower():
-                subprocess.Popen([str(self.game / "Nebulous.exe")], cwd=self.game)
-        except OSError:
+            self.runtime.begin("battle")
+        except Exception:
             self.cancel()
             raise
         return record
 
+    def queue_ack(self, result, kind):
+        if result.findtext("RuntimeInstance"):
+            self.state["pending_ack"] = {"Instance": result.findtext("RuntimeInstance"),
+                "Kind": kind, "Id": result.findtext("Id"), "Revision": result.findtext("Revision", "0")}
+
+    def flush_ack(self):
+        ack = self.state.get("pending_ack")
+        if not ack:
+            return
+        root = ET.Element("OperationAck")
+        for key, value in ack.items():
+            put(root, key, value)
+        write_xml(self.exchange / "operation-ack.xml", root)
+        self.state.pop("pending_ack", None)
+        try:
+            self.persist()
+        except Exception:
+            self.state["pending_ack"] = ack
+            raise
+
+    def pump_game(self):
+        self.flush_ack()
+        refit = self.state.get("active_refit")
+        battle = self.state.get("active_battle")
+        active = refit or battle
+        try:
+            if active and active.get("launch_pending") and not self.runtime.purpose and not active.get("launch_error"):
+                self.runtime.begin("refit" if refit else "battle")
+            ready = self.runtime.poll()
+        except Exception as exc:
+            if active:
+                active["launch_error"] = str(exc)
+                self.persist()
+            raise
+        if not ready or not active or not active.get("launch_pending"):
+            return
+        active["runtime_instance"] = self.runtime.instance
+        if refit:
+            from .refit import RefitService
+            RefitService(self)._request(refit)
+        else:
+            root = read_xml(Path(active["directory"]) / "request.xml")
+            put(root, "RuntimeInstance", self.runtime.instance)
+            put(root, "CloseGame", "true")
+            write_xml(self.exchange / "request.xml", root)
+        active["launch_pending"] = False
+        self.persist()
+        self.runtime.submitted()
+
     def bridge_status(self):
+        active = self.state.get("active_battle")
+        if active and active.get("launch_pending"):
+            return active.get("launch_error") or self.runtime.message
         try:
             status = read_xml(self.exchange / "status.xml")
             active = self.state.get("active_battle")
@@ -330,16 +382,24 @@ class Campaign:
                 if item.get("Key") not in valid_keys or item["Key"] in updates:
                     raise ValueError("Battle report contains an unknown or duplicate player ship identity.")
                 updates[item["Key"]] = item
+        previous = copy.deepcopy(self.state)
         self.state["ship_results"].update(updates)
         self.state["battles"].append(record)
         self.state["active_battle"] = None
-        self.persist()
+        self.queue_ack(result, "battle")
+        try:
+            self.persist()
+        except Exception:
+            self.state = previous
+            raise
+        self.flush_ack()
         return record
 
     def cancel(self):
         active = self.state.get("active_battle")
         if not active:
             return
+        self.runtime.cancel_startup()
         # Explicit cancellation is observed by the bridge; no active game is killed.
         root = ET.Element("Cancellation")
         put(root, "Id", active["id"])

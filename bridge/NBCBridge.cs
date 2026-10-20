@@ -25,6 +25,7 @@ namespace NBCBridge
             if (UnityEngine.Object.FindObjectOfType<BattleBridge>() != null) return;
             var obj = new GameObject("NBC Campaign Bridge");
             UnityEngine.Object.DontDestroyOnLoad(obj);
+            obj.AddComponent<LifecycleBridge>();
             obj.AddComponent<BattleBridge>();
             obj.AddComponent<RefitBridge>();
             Debug.Log("[NBC] Campaign bridge loaded.");
@@ -115,7 +116,7 @@ namespace NBCBridge
                     string oldId = id;
                     if (File.Exists(Path.Combine(exchange, "request.xml")) && Read(Path.Combine(exchange, "request.xml")).DocumentElement["Id"]?.InnerText == oldId)
                         File.Delete(Path.Combine(exchange, "request.xml"));
-                    request = null; stage = "idle";
+                    request = null; stage = "idle"; LifecycleBridge.Instance.Idle();
                     Status("Campaign request cancelled. The current game remains open.");
                     return;
                 }
@@ -129,6 +130,7 @@ namespace NBCBridge
                 Guid parsed;
                 if (!Guid.TryParse(incomingId, out parsed)) throw new InvalidDataException("Invalid battle ID");
                 if (File.Exists(Path.Combine(exchange, "cancel.xml")) && Read(Path.Combine(exchange, "cancel.xml")).DocumentElement["Id"]?.InnerText == incomingId) return;
+                if (!LifecycleBridge.Instance.Accept(incoming.DocumentElement)) return;
                 request = incoming; id = incomingId; output = Value("ResultDirectory");
                 if (!Path.IsPathRooted(output) || !Directory.Exists(output)) throw new InvalidDataException("Result directory does not exist");
                 if (File.Exists(Path.Combine(output, "result.xml"))) { Finish(); return; }
@@ -249,7 +251,7 @@ namespace NBCBridge
             File.Move(Path.Combine(output, "report.xml.tmp"), Path.Combine(output, "report.xml"));
             var doc = new XmlDocument();
             var root = doc.CreateElement("BattleResult"); doc.AppendChild(root);
-            Add(root, "Id", id);
+            Add(root, "Id", id); Add(root, "RuntimeInstance", LifecycleBridge.Instance.Identity);
             Add(root, "Outcome", report.WinningTeam == TeamIdentifier.None ? "Draw" : report.LocalPlayerWon ? "Victory" : "Defeat");
             Add(root, "Duration", report.GameDuration); Add(root, "WinningTeam", report.WinningTeam);
             Add(root, "CompletedUtc", DateTime.UtcNow.ToString("o"));
@@ -278,6 +280,7 @@ namespace NBCBridge
 
         private void Finish()
         {
+            LifecycleBridge.Instance.Await(request.DocumentElement, "battle");
             stage = "completed";
             Status("Battle exported. Return to Campaign Command to view the debrief.");
             string path = Path.Combine(exchange, "request.xml");

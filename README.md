@@ -2,13 +2,13 @@
 
 A Windows desktop proof of concept with a shared equipment inventory, native in-game fleet refitting, random opposing forces, local skirmishes and automatic battle-report import.
 
-## Native refitting and inventory (bridge 0.2)
+## Native refitting and inventory (bridge 0.3)
 
-1. Close NEBULOUS and run **Install Bridge.ps1** to update the bridge. Keep **NBC Campaign Bridge** enabled in Mods. Start the game once so it exports the stock component catalogue; the app's Inventory tab also has **Connect / open NEBULOUS**.
+1. Close NEBULOUS and run **Install Bridge.ps1** to update the bridge. Keep **NBC Campaign Bridge** enabled in Mods. Enable the bridge once in the game; the app's Inventory tab also has **Connect / open NEBULOUS**.
 2. Open **Start Campaign.cmd** in this project folder. Load/import a current fleet, or use **Create 3-ship test fleet** to create a disposable three-frigate roster. That action backs up the previous roster under `data/roster-backups`.
 3. In **Inventory**, select equipment and a quantity. **Buy** adds spares, **Sell** removes spares. Store stock is unlimited. There is no currency, price, installation cost or shipyard requirement. Installed components cannot be sold directly.
-4. Click **Refit fleet → NEBULOUS**. From its main menu the bridge loads the entire campaign fleet into the normal game editor. The component palette shows available equipment and spare counts. Removing a part makes it available on other ships. Normal socket compatibility and design calculations remain in the game.
-5. Use the overlay's **Review refit → Campaign** button to export a draft and leave the editor. The app opens its Refit tab with a list of proposed component changes. Choose **Confirm refit**, **Continue / resume editor**, or **Cancel refit**.
+4. Click **Refit fleet → NEBULOUS**. The app launches the game automatically and waits for the live bridge. From its main menu the bridge loads the entire campaign fleet into the normal game editor. The component palette shows available equipment and spare counts. Removing a part makes it available on other ships. Normal socket compatibility and design calculations remain in the game.
+5. Use the overlay's **Review refit → Campaign** button to export a draft. After the app validates and saves the draft, NEBULOUS closes automatically. The app opens its Refit tab with a list of proposed component changes. Choose **Confirm refit**, **Continue / resume editor**, or **Cancel refit**. Continuing launches NEBULOUS again with the draft. Discarding a refit, either in game or in the app, closes its game session and preserves the approved fleet.
 
 The game uses the normal editor, with additional inventory checks on installation, component paste and undo/redo. If a component removed from Ship A has been installed on Ship B, undoing the removal on A is blocked until another copy is available. Native per-ship history is retained; it is not replaced with a global undo stack. Whole-fitting paste, roster changes and normal save/load/test actions are blocked during campaign refits. Ordinary editor sessions and skirmishes do not use these restrictions.
 
@@ -33,7 +33,7 @@ Requirements: Windows, Python 3.10+ with Tkinter, NEBULOUS: Fleet Command, and S
 4. On **Fleet**, load an installed fleet or import a `.fleet` file. Rename ships or change hull numbers. Use the native refit workflow above to change equipment. Original fleet files are preserved.
 5. On **Battle**, choose an enemy faction and target point budget, then **Generate enemy**. The generator samples subsets of complete stock designs. The actual total may differ from the target.
 6. Click **Run battle → NEBULOUS**. The game opens if necessary. If it is already running, return to its main menu. The bridge creates a local skirmish, assigns your fleet and one AI enemy, validates settings and launches it. Deploy your ships and play normally.
-7. When the battle ends, **Debrief** fills automatically. Return to the external app to view the outcome, ship condition, casualties and damage statistics. The game stays open; report capture does not close it or interrupt the end screen.
+7. When the battle ends, **Debrief** fills automatically. Return to the external app to view the outcome, ship condition, casualties and damage statistics. NEBULOUS closes automatically after the app validates and saves the report, and the app brings the Debrief forward.
 
 To use another game location:
 
@@ -61,8 +61,10 @@ The bridge was built against the local NEBULOUS 0.6.2.6 installation. Rebuild ag
 app.py                       Native Tkinter UI
 nbc/core.py                  XML editor, generator, campaign state and bridge exchange
 nbc/refit.py                 Inventory, draft validation and atomic refit confirmation
+nbc/runtime.py               Nonblocking startup, process identity and export acknowledgements
 bridge/NBCBridge.cs          Code-only IModEntryPoint mod
 bridge/RefitBridge.cs        Scoped native editor hooks and refit exchange
+bridge/LifecycleBridge.cs    Live heartbeat and acknowledged graceful shutdown
 bridge/lib/                  Pinned Harmony library and MIT license
 bridge/ModInfo.xml           Local mod manifest
 scripts/Build Bridge.ps1     Compile against installed game libraries
@@ -94,6 +96,14 @@ python app.py --data data/my-refit-demo
 ```
 
 The fixture generator refuses to overwrite an existing save. The live validation notes describe the separate test save already used on this machine.
+
+## Game lifecycle
+
+Refit and battle actions launch the configured game executable with the game directory as its working directory. The app waits up to three minutes for bridge 0.3 to reach the main menu before publishing a request. A fresh heartbeat must match the executable path, process ID and process start time; stale status files cannot satisfy startup. An existing game in another editor or battle is left alone until you return it to the main menu. An operation waiting for export acknowledgement, or a process shutting down, is allowed to finish before the next operation starts.
+
+The bridge writes the draft/report before its completion marker. The app validates the export and durably records an acknowledgement in the campaign save before publishing `operation-ack.xml`. Only the matching game process, operation and revision can use it to quit normally. Failed saves/imports leave the game open; exchange-write failures retry on subsequent app polls and after an app restart. No process is force-killed. Cancelling battle tracking still leaves a live battle open. Cancelling a startup can close only the idle game launched by that request, using a unique launch token. **Connect / open NEBULOUS** refreshes the equipment catalogue and closes an idle game it launched itself.
+
+`runtime-status.xml` contains the live process heartbeat; `runtime-command.xml` contains a launch-token-scoped idle shutdown request. Refits remain drafts until confirmed in the external app. Closing or crashing the game without exporting does not recover unsaved editor changes. If startup times out, check Steam and whether the bridge is enabled, then use **Continue / resume editor** for a refit, or cancel and relaunch a battle request.
 
 ## Troubleshooting
 

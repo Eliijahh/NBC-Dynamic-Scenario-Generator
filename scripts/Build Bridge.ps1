@@ -18,6 +18,7 @@ foreach ($referenceName in $referenceNames) {
 }
 $compilerArguments += Join-Path $projectRoot 'bridge\NBCBridge.cs'
 $compilerArguments += Join-Path $projectRoot 'bridge\RefitBridge.cs'
+$compilerArguments += Join-Path $projectRoot 'bridge\LifecycleBridge.cs'
 $compilerArguments += "-r:$(Join-Path $projectRoot 'bridge\lib\0Harmony.dll')"
 & dotnet $compilerPath @compilerArguments
 if ($LASTEXITCODE -ne 0) { throw 'Bridge compilation failed.' }

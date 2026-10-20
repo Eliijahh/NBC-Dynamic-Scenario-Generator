@@ -27,6 +27,7 @@ namespace NBCBridge
         public static RefitBridge Instance;
         public FleetEditorController Editor;
         public bool Ready;
+        public bool PatchesReady => patchesReady;
         private string exchange, id = "", folder, stage = "idle", message = "", seen = "";
         private int revision;
         private float nextPoll, started;
@@ -166,6 +167,7 @@ namespace NBCBridge
                 if (File.Exists(cancel) && Read(cancel).DocumentElement["Id"]?.InnerText == root["Id"].InnerText) { seen = token; return; }
                 if (!patchesReady) throw new InvalidOperationException("Editor patches did not initialize; restart with the updated bridge");
                 if (File.Exists(Path.Combine(exchange, "request.xml"))) throw new InvalidOperationException("A battle request is also pending");
+                if (!LifecycleBridge.Instance.Accept(root)) return;
                 request = incoming; id = root["Id"].InnerText; revision = int.Parse(root["Revision"].InnerText); seen = token;
                 folder = root["Directory"].InnerText;
                 if (!Path.IsPathRooted(folder) || !Directory.Exists(folder)) throw new InvalidDataException("Invalid refit directory");
@@ -284,6 +286,7 @@ namespace NBCBridge
                 string path = Path.Combine(folder, "draft-" + revision + ".fleet");
                 Write(path, Editor.Fleet.GetSerializable().CreateXmlDocumentWithRoot());
                 var doc = new XmlDocument(); var root = doc.CreateElement("RefitReady"); doc.AppendChild(root);
+                Add(root, "RuntimeInstance", LifecycleBridge.Instance.Identity);
                 Add(root, "Id", id); Add(root, "Revision", revision); Add(root, "Hash", Hash(path));
                 var labels = doc.CreateElement("Sockets"); root.AppendChild(labels);
                 foreach (var ship in Editor.Fleet.FleetShips)
@@ -298,9 +301,11 @@ namespace NBCBridge
             else
             {
                 var doc = new XmlDocument(); var root = doc.CreateElement("RefitReady"); doc.AppendChild(root);
+                Add(root, "RuntimeInstance", LifecycleBridge.Instance.Identity);
                 Add(root, "Id", id); Add(root, "Revision", revision); Add(root, "Cancelled", "true");
                 Write(Path.Combine(folder, "ready-" + revision + ".xml"), doc);
             }
+            LifecycleBridge.Instance.Await(request.DocumentElement, "refit");
             bool hadEditor = Editor != null;
             Ready = false; stage = review ? "review" : "cancelled";
             Status(review ? "Draft exported. Review and confirm in Campaign Command." : "Refit cancelled. Campaign fleet and inventory preserved.");

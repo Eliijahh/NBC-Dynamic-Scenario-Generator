@@ -270,7 +270,7 @@ class App(tk.Tk):
             self.refits.start()
             self.refresh()
             self.tabs.select(self.refit_tab)
-            self.status.set("Refit requested. Switch to NEBULOUS; the bridge opens the editor from its main menu.")
+            self.status.set("Starting NEBULOUS and opening your fleet editor…")
         self.guarded(action)
 
     def resume_refit(self):
@@ -460,6 +460,9 @@ class App(tk.Tk):
 
     def poll(self):
         try:
+            self.campaign.pump_game()
+            if self.campaign.runtime.purpose:
+                self.status.set(self.campaign.runtime.message)
             if self.refits.active:
                 changed = self.refits.collect()
                 if changed:
@@ -482,6 +485,11 @@ class App(tk.Tk):
                     self.history.selection_set(result["id"])
                     self.select_result()
                     self.status.set(f"Battle imported: {result['outcome']}. Your debrief is ready.")
+                    self.deiconify()
+                    self.lift()
+                    self.attributes("-topmost", True)
+                    self.after(700, lambda: self.attributes("-topmost", False))
+                    self.focus_force()
                     self.bell()
                 else:
                     self.status.set(self.campaign.bridge_status())

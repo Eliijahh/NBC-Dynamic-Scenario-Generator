@@ -101,21 +101,20 @@ class RefitService:
         self.c.state["active_refit"] = record
         self.c.persist()
         try:
-            self._request(record)
             if launch:
-                self.open_game()
+                record["launch_pending"] = True
+                self.c.persist()
+                self.c.runtime.begin("refit")
+            else:
+                self._request(record)
         except Exception:
             self.cancel()
             raise
         return record
 
     def open_game(self):
-        import subprocess
-        if not (self.c.game / "Mods/NBCBridge/NBCBridge.dll").exists():
-            raise ValueError("Install the updated bridge before opening a refit.")
-        running = subprocess.run(["tasklist", "/FI", "IMAGENAME eq Nebulous.exe", "/FO", "CSV", "/NH"], capture_output=True, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        if '"nebulous.exe"' not in running.stdout.lower():
-            subprocess.Popen([str(self.c.game / "Nebulous.exe")], cwd=self.c.game)
+        self.ensure_idle()
+        self.c.runtime.begin("catalog")
 
     def _request(self, record):
         folder = Path(record["directory"])
@@ -127,6 +126,9 @@ class RefitService:
         for k, v in {"Id": record["id"], "Revision": record["revision"], "Fleet": str(source),
                      "Hash": hashlib.sha256(source.read_bytes()).hexdigest(), "Directory": str(folder)}.items():
             put(root, k, v)
+        if record.get("runtime_instance"):
+            put(root, "RuntimeInstance", record["runtime_instance"])
+            put(root, "CloseGame", "true")
         items = ET.SubElement(root, "Supply")
         for key, count in sorted(supply.items()):
             ET.SubElement(items, "Item", key=key, quantity=str(count))
@@ -146,8 +148,15 @@ class RefitService:
             self.cancel()
             return True
         self.review()
+        previous = copy.deepcopy(self.c.state)
         record["stage"] = "review"
-        self.c.persist()
+        self.c.queue_ack(doc, "refit")
+        try:
+            self.c.persist()
+        except Exception:
+            self.c.state = previous
+            raise
+        self.c.flush_ack()
         return True
 
     def review(self):
@@ -200,30 +209,52 @@ class RefitService:
         if not self.active:
             raise ValueError("There is no refit to resume.")
         record = self.active
+        if launch and self.c.runtime.purpose:
+            raise ValueError("NEBULOUS is already starting. Wait for the editor or cancel the refit.")
         folder = Path(record["directory"])
         if record["stage"] == "review":
             draft, _, _ = self.review()
         else:
             draft = Fleet.load(folder / f"input-{record['revision']}.fleet")
+        resume_instance = record.get("runtime_instance") if record["stage"] == "editor" else None
         record["revision"] += 1
         draft.save(folder / f"input-{record['revision']}.fleet")
         record["stage"] = "editor"
         self.c.persist()
-        self._request(record)
+        record.pop("launch_error", None)
         if launch:
-            self.open_game()
+            record["launch_pending"] = True
+            self.c.persist()
+            self.c.runtime.begin("refit", resume_instance=resume_instance)
+        else:
+            self._request(record)
 
     def cancel(self):
         if not self.active:
             return
+        previous = copy.deepcopy(self.c.state)
+        self.c.runtime.cancel_startup()
+        record = self.active
+        if record.get("runtime_instance"):
+            ack = ET.Element("RefitReady")
+            for k, v in {"RuntimeInstance": record["runtime_instance"], "Id": record["id"], "Revision": record["revision"]}.items():
+                put(ack, k, v)
+            self.c.queue_ack(ack, "refit")
         root = ET.Element("RefitCancellation")
         put(root, "Id", self.active["id"])
         write_xml(self.c.exchange / "refit-cancel.xml", root)
         self.c.state["refits"].append(dict(self.active, stage="cancelled", completed=now()))
         self.c.state["active_refit"] = None
-        self.c.persist()
+        try:
+            self.c.persist()
+        except Exception:
+            self.c.state = previous
+            raise
+        self.c.flush_ack()
 
     def status(self):
+        if self.active and self.active.get("launch_pending"):
+            return self.active.get("launch_error") or self.c.runtime.message
         try:
             doc = read_xml(self.c.exchange / "refit-status.xml")
             if self.active and doc.findtext("Id") == self.active["id"]:
