@@ -1,6 +1,5 @@
 """Inventory and refit transactions. The campaign JSON is the commit boundary."""
 from collections import Counter
-import copy
 import hashlib
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -66,8 +65,7 @@ class RefitService:
         return result
 
     def ensure_idle(self):
-        if self.active or self.c.state.get("active_battle"):
-            raise ValueError("Finish or cancel the pending battle or refit first.")
+        self.c.ensure_idle()
 
     def trade(self, key, quantity, buy=True):
         self.ensure_idle()
@@ -83,8 +81,8 @@ class RefitService:
             inventory[key] = count
         else:
             inventory.pop(key, None)
-        self.c.state["inventory"] = inventory
-        self.c.persist()
+        with self.c.transaction():
+            self.c.state["inventory"] = inventory
 
     def start(self, launch=True):
         self.ensure_idle()
@@ -148,14 +146,9 @@ class RefitService:
             self.cancel()
             return True
         self.review()
-        previous = copy.deepcopy(self.c.state)
-        record["stage"] = "review"
-        self.c.queue_ack(doc, "refit")
-        try:
-            self.c.persist()
-        except Exception:
-            self.c.state = previous
-            raise
+        with self.c.transaction():
+            record["stage"] = "review"
+            self.c.queue_ack(doc, "refit")
         self.c.flush_ack()
         return True
 
@@ -190,17 +183,13 @@ class RefitService:
         if not self.active or self.active["stage"] != "review":
             raise ValueError("Return from the game editor before confirming.")
         draft, inventory, changes = self.review()
-        previous = copy.deepcopy(self.c.state)
         record = dict(self.active, stage="confirmed", completed=now(), changes=len(changes))
-        self.c.state["inventory"] = inventory
-        self.c.state["player_xml"] = ET.tostring(draft.root, encoding="unicode")
-        self.c.state["active_refit"] = None
-        self.c.state["refits"].append(record)
-        try:
-            self.c.persist()  # Fleet, inventory and session completion commit in one replacement.
-        except Exception:
-            self.c.state = previous
-            raise
+        with self.c.transaction():  # Fleet, inventory and session completion commit in one replacement.
+            self.c.state["inventory"] = inventory
+            self.c.state["player_xml"] = ET.tostring(draft.root, encoding="unicode")
+            self.c.state["active_refit"] = None
+            self.c.state["refits"].append(record)
+            self.c.sync_ship_state(draft)
         self.c.player = draft
         draft.save(self.c.data / "player.fleet")  # Derived export; JSON remains authoritative.
         return changes
@@ -232,24 +221,21 @@ class RefitService:
     def cancel(self):
         if not self.active:
             return
-        previous = copy.deepcopy(self.c.state)
         self.c.runtime.cancel_startup()
         record = self.active
+        ack = None
         if record.get("runtime_instance"):
             ack = ET.Element("RefitReady")
             for k, v in {"RuntimeInstance": record["runtime_instance"], "Id": record["id"], "Revision": record["revision"]}.items():
                 put(ack, k, v)
-            self.c.queue_ack(ack, "refit")
         root = ET.Element("RefitCancellation")
         put(root, "Id", self.active["id"])
         write_xml(self.c.exchange / "refit-cancel.xml", root)
-        self.c.state["refits"].append(dict(self.active, stage="cancelled", completed=now()))
-        self.c.state["active_refit"] = None
-        try:
-            self.c.persist()
-        except Exception:
-            self.c.state = previous
-            raise
+        with self.c.transaction():
+            if ack is not None:
+                self.c.queue_ack(ack, "refit")
+            self.c.state["refits"].append(dict(self.active, stage="cancelled", completed=now()))
+            self.c.state["active_refit"] = None
         self.c.flush_ack()
 
     def status(self):

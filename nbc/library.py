@@ -9,10 +9,10 @@ import shutil
 import uuid
 import xml.etree.ElementTree as ET
 
-from .core import atomic_bytes, read_xml
+from .core import STATE_VERSION, atomic_bytes, read_xml
 
 
-SUPPORTED_STATE_VERSION = 1
+SUPPORTED_STATE_VERSION = STATE_VERSION
 
 
 @dataclass(frozen=True)
@@ -80,6 +80,21 @@ class CampaignLibrary:
         return fleet_root.findtext("Name", ""), fleet_root.findtext("FactionKey", ""), len(ships)
 
     @staticmethod
+    def _shape_error(state):
+        for key in ("inventory", "owned_hulls", "ship_state", "ship_results"):
+            if key in state and not isinstance(state[key], dict):
+                return f"Campaign save field '{key}' is invalid."
+        for key in ("battles", "mission_offers", "refits"):
+            if key in state and not isinstance(state[key], list):
+                return f"Campaign save field '{key}' is invalid."
+        for key in ("active_battle", "active_refit", "accepted_mission"):
+            if key in state and state[key] is not None and not isinstance(state[key], dict):
+                return f"Campaign save field '{key}' is invalid."
+        if state.get("campaign") is not None and not isinstance(state.get("campaign"), dict):
+            return "Campaign metadata is invalid."
+        return ""
+
+    @staticmethod
     def _file_time(path):
         try:
             return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
@@ -101,9 +116,13 @@ class CampaignLibrary:
         elif not (path / "player.fleet").exists():
             error = "Campaign save is missing campaign.json and player.fleet."
 
-        version = state.get("version", SUPPORTED_STATE_VERSION)
-        if not error and (not isinstance(version, int) or version > SUPPORTED_STATE_VERSION):
+        version = state.get("version", 1)
+        if not error and (type(version) is not int or version < 1):
+            error = "Campaign save version is invalid."
+        elif not error and version > SUPPORTED_STATE_VERSION:
             error = "Campaign save was created by a newer, unsupported version."
+        elif not error:
+            error = self._shape_error(state)
 
         meta = state.get("campaign") or {}
         if not isinstance(meta, dict):
@@ -122,7 +141,12 @@ class CampaignLibrary:
         commander = meta.get("commander") or ""
         faction = meta.get("faction") or fleet_faction or ""
         try:
-            credits = int(meta.get("credits", 0))
+            raw_credits = meta.get("credits", 0)
+            if type(raw_credits) is bool:
+                raise ValueError
+            credits = int(raw_credits)
+            if credits < 0:
+                raise ValueError
         except (TypeError, ValueError):
             credits = 0
             if not error:

@@ -97,16 +97,16 @@ CURRENT BASELINE ALREADY IN THE PROJECT
 
 1.3 Save data
 [x] Existing campaign/battle state persists across app restarts.
-[ ] Extend the save schema with credits, owned hulls, ship condition,
+[x] Extend the save schema with credits, owned hulls, ship condition,
     mission offers, accepted mission and campaign status.
-[ ] Save after every economic or campaign-state transaction.
-[ ] Atomic save writes.
-[ ] Backup of the previous save.
-[ ] Initial Settings tab with manual save, resume, save-and-exit and
+[x] Save after every economic or campaign-state transaction.
+[x] Atomic save writes.
+[x] Backup of the previous save.
+[x] Initial Settings tab with manual save, resume, save-and-exit and
     exit-without-saving actions for Campaign Command.
-[ ] Schema version and migration handling.
+[x] Schema version and migration handling.
 [ ] Resume an accepted mission/deployment after an app restart.
-[ ] Lock incompatible actions while a mission, battle or refit is pending.
+[x] Lock incompatible actions while a mission, battle or refit is pending.
 
 
 2. ECONOMY AND CREDITS

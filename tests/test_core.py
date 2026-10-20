@@ -1,12 +1,14 @@
 import copy
+import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import uuid
 import xml.etree.ElementTree as ET
 
 from nbc.generation import select_generated_fleet
-from nbc.core import Campaign, Fleet, DEFAULT_GAME, DEFAULT_STARTING_CREDITS, discover, put, write_xml
+from nbc.core import Campaign, Fleet, DEFAULT_GAME, DEFAULT_STARTING_CREDITS, STATE_VERSION, atomic_bytes, discover, put, write_xml
 
 
 def sample(name="Test Fleet", faction="Stock/Alliance"):
@@ -115,6 +117,132 @@ class CampaignSetupTests(unittest.TestCase):
         self.assertEqual(restarted.state["battles"], [])
         self.assertEqual(restarted.state["ship_results"], {})
         self.assertEqual(restarted.state["inventory"], {})
+        self.assertEqual(restarted.state["version"], STATE_VERSION)
+        self.assertEqual(restarted.campaign_status, "active")
+        self.assertEqual(restarted.credits, DEFAULT_STARTING_CREDITS)
+        self.assertEqual(restarted.state["owned_hulls"], {})
+        self.assertEqual(restarted.state["mission_offers"], [])
+        self.assertIsNone(restarted.state["accepted_mission"])
+        ship_key = restarted.player.ships[0].findtext("Key")
+        self.assertEqual(restarted.state["ship_state"][ship_key], {"condition": 1.0, "status": "ready"})
+        self.assertIsNone(restarted.pending_action())
+
+    def test_schema_migration_from_v1_backs_up_and_preserves_data(self):
+        data = self.root / "migrated"
+        data.mkdir()
+        fleet = sample("Legacy Fleet")
+        ship_key = fleet.ships[0].findtext("Key")
+        state = {
+            "version": 1,
+            "campaign": {"name": "Legacy Watch", "credits": 1234},
+            "player_xml": ET.tostring(fleet.root, encoding="unicode"),
+            "battles": [{"id": "old-battle"}],
+            "ship_results": {ship_key: {"Condition": "0.72"}},
+            "active_battle": None,
+            "inventory": {"Stock/Mk62 Cannon": 2},
+            "active_refit": None,
+            "refits": [],
+            "future_data": {"preserve": True},
+        }
+        (data / "campaign.json").write_text(json.dumps(state), encoding="utf-8")
+
+        campaign = Campaign(self.campaign.game, data)
+
+        self.assertEqual(campaign.state["version"], STATE_VERSION)
+        self.assertEqual(campaign.metadata["name"], "Legacy Watch")
+        self.assertEqual(campaign.credits, 1234)
+        self.assertEqual(campaign.campaign_status, "active")
+        self.assertEqual(campaign.state["inventory"], {"Stock/Mk62 Cannon": 2})
+        self.assertEqual(campaign.state["ship_results"][ship_key]["Condition"], "0.72")
+        self.assertEqual(campaign.state["ship_state"][ship_key], {"condition": 1.0, "status": "ready"})
+        self.assertEqual(campaign.state["mission_offers"], [])
+        self.assertIsNone(campaign.state["accepted_mission"])
+        self.assertEqual(campaign.state["future_data"], {"preserve": True})
+
+        backups = list((data / "campaign-backups").iterdir())
+        self.assertEqual(len(backups), 1)
+        self.assertIn("schema-v1-to-v2", backups[0].name)
+        backup = json.loads((backups[0] / "campaign.json").read_text(encoding="utf-8"))
+        self.assertEqual(backup["version"], 1)
+        self.assertEqual(backup["campaign"]["credits"], 1234)
+
+    def test_v2_normalization_backs_up_previous_save(self):
+        data = self.root / "normalized"
+        data.mkdir()
+        fleet = sample("Normalize Fleet")
+        (data / "campaign.json").write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "campaign": {"name": "Normalize Watch", "credits": 42},
+                    "player_xml": ET.tostring(fleet.root, encoding="unicode"),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        campaign = Campaign(self.campaign.game, data)
+
+        self.assertEqual(campaign.state["version"], STATE_VERSION)
+        self.assertEqual(campaign.credits, 42)
+        self.assertEqual(campaign.state["mission_offers"], [])
+        backups = list((data / "campaign-backups").iterdir())
+        self.assertEqual(len(backups), 1)
+        self.assertIn("normalize-v2", backups[0].name)
+
+        Campaign(self.campaign.game, data)
+        self.assertEqual(len(list((data / "campaign-backups").iterdir())), 1)
+
+    def test_newer_or_invalid_schema_versions_are_rejected(self):
+        for version, message in ((99, "newer"), ("1", "invalid")):
+            with self.subTest(version=version):
+                data = self.root / f"version-{version}"
+                data.mkdir()
+                (data / "campaign.json").write_text(json.dumps({"version": version}), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, message):
+                    Campaign(self.campaign.game, data)
+
+    def test_pending_mission_state_persists_and_locks_idle_actions(self):
+        self.campaign.start_new_campaign(
+            "Mission Watch", "Cmdr Vale", "Stock/Alliance", 1000, sample("Mission Starter")
+        )
+        self.campaign.state["accepted_mission"] = {"id": "mission-1", "name": "Patrol"}
+        self.campaign.persist()
+
+        self.assertEqual(self.campaign.pending_action(), "mission")
+        with self.assertRaisesRegex(ValueError, "pending mission"):
+            self.campaign.ensure_idle()
+
+        restarted = Campaign(self.campaign.game, self.campaign.data)
+        self.assertEqual(restarted.pending_action(), "mission")
+        self.assertEqual(restarted.accepted_mission["id"], "mission-1")
+        self.assertEqual(restarted.campaign_status, "active")
+
+    def test_credit_and_campaign_status_transactions_persist(self):
+        self.campaign.start_new_campaign(
+            "Ledger Watch", "Cmdr Vale", "Stock/Alliance", 1000, sample("Ledger Starter")
+        )
+        self.campaign.set_credits(5000)
+        self.campaign.set_campaign_status("completed")
+
+        restarted = Campaign(self.campaign.game, self.campaign.data)
+        self.assertEqual(restarted.credits, 5000)
+        self.assertEqual(restarted.campaign_status, "completed")
+        with self.assertRaises(ValueError):
+            restarted.set_credits(-1)
+        with self.assertRaises(ValueError):
+            restarted.set_campaign_status("unknown")
+
+    def test_transaction_restores_state_when_persist_fails(self):
+        self.campaign.start_new_campaign(
+            "Rollback Watch", "Cmdr Vale", "Stock/Alliance", 1000, sample("Rollback Starter")
+        )
+        before = copy.deepcopy(self.campaign.state)
+        with patch.object(self.campaign, "persist", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                with self.campaign.transaction():
+                    self.campaign.state["inventory"] = {"Stock/Radar": 1}
+        self.assertEqual(self.campaign.state, before)
 
     def test_new_campaign_backs_up_previous_save_and_clears_enemy(self):
         self.campaign.player = sample("Old Fleet")
@@ -163,12 +291,15 @@ class CampaignSetupTests(unittest.TestCase):
                     self.campaign.start_new_campaign(*args)
 
     def test_new_campaign_is_blocked_by_pending_activity(self):
-        self.campaign.state["active_battle"] = {"id": "pending"}
-        with self.assertRaises(ValueError):
-            self.campaign.start_new_campaign(
-                "Campaign", "Cmdr", "Stock/Alliance", 1000, sample()
-            )
-        self.assertEqual(self.campaign.state["active_battle"], {"id": "pending"})
+        for key in ("active_battle", "active_refit", "accepted_mission"):
+            with self.subTest(key=key):
+                self.campaign.state[key] = {"id": "pending"}
+                with self.assertRaises(ValueError):
+                    self.campaign.start_new_campaign(
+                        "Campaign", "Cmdr", "Stock/Alliance", 1000, sample()
+                    )
+                self.assertEqual(self.campaign.state[key], {"id": "pending"})
+                self.campaign.state[key] = None
 
 
 class ExchangeTests(unittest.TestCase):
@@ -236,6 +367,18 @@ class ExchangeTests(unittest.TestCase):
         self.complete(battle)
         self.assertIsNone(self.campaign.collect())
         self.assertEqual(self.campaign.state["battles"][0]["status"], "cancelled")
+
+
+class AtomicWriteTests(unittest.TestCase):
+    def test_failed_replace_keeps_original_and_removes_temp_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "state.json"
+            path.write_bytes(b"old")
+            with patch("nbc.core.os.replace", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    atomic_bytes(path, b"new")
+            self.assertEqual(path.read_bytes(), b"old")
+            self.assertFalse(list(path.parent.glob(path.name + ".*.tmp")))
 
 
 @unittest.skipUnless((DEFAULT_GAME / "Nebulous.exe").exists(), "Local game is not installed")

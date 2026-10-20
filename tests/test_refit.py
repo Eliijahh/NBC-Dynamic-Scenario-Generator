@@ -53,6 +53,20 @@ class RefitTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.service.trade("Stock/Radar", -1)
 
+    def test_trade_rolls_back_if_save_fails(self):
+        before = copy.deepcopy(self.c.state)
+        with patch.object(self.c, "persist", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.service.trade("Stock/Radar", 1)
+        self.assertEqual(self.c.state, before)
+
+    def test_pending_mission_locks_economy_and_refit(self):
+        self.c.state["accepted_mission"] = {"id": "mission-1"}
+        with self.assertRaisesRegex(ValueError, "pending mission"):
+            self.service.trade("Stock/Radar", 1)
+        with self.assertRaisesRegex(ValueError, "pending mission"):
+            self.service.start(launch=False)
+
     def test_shared_transfer_and_inventory_conservation(self):
         baseline = self.c.player.clone()
         draft = baseline.clone()

@@ -94,6 +94,26 @@ class CampaignLibraryTests(unittest.TestCase):
         self.assertTrue(loaded.metadata["legacy"])
         self.assertEqual(loaded.player.name, "Old Fleet")
 
+    def test_version_1_save_is_supported_and_listed(self):
+        path = self.library.campaigns_dir / "version-one"
+        path.mkdir()
+        fleet = sample("Version One Fleet")
+        (path / "campaign.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "campaign": {"name": "Version One", "credits": 1234},
+                    "player_xml": ET.tostring(fleet.root, encoding="unicode"),
+                }
+            ),
+            encoding="utf-8",
+        )
+        info = self.library.get("version-one")
+        self.assertIsNotNone(info)
+        self.assertTrue(info.valid, info.error)
+        self.assertEqual(info.name, "Version One")
+        self.assertEqual(info.credits, 1234)
+
     def test_corrupt_newer_and_unsupported_saves_are_reported(self):
         broken = self.library.campaigns_dir / "broken"
         broken.mkdir()
@@ -113,11 +133,26 @@ class CampaignLibraryTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+        bad_shape = self.library.campaigns_dir / "bad-shape"
+        bad_shape.mkdir()
+        (bad_shape / "campaign.json").write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "campaign": {"name": "Bad Shape", "credits": 10},
+                    "player_xml": ET.tostring(sample().root, encoding="unicode"),
+                    "inventory": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
         infos = {info.id: info for info in self.library.list()}
         self.assertIn("Unreadable", infos["broken"].error)
         self.assertIn("newer", infos["newer"].error)
         self.assertIn("no player fleet", infos["missing-fleet"].error)
-        for campaign_id in ("broken", "newer", "missing-fleet"):
+        self.assertIn("inventory", infos["bad-shape"].error)
+        for campaign_id in ("broken", "newer", "missing-fleet", "bad-shape"):
             self.assertFalse(infos[campaign_id].valid)
             self.assertEqual(infos[campaign_id].id, campaign_id)
 

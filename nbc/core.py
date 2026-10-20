@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -14,6 +15,8 @@ from datetime import datetime, timezone
 
 DEFAULT_GAME = Path(r"R:\SteamLibrary\steamapps\common\Nebulous")
 DEFAULT_STARTING_CREDITS = 1_000_000
+STATE_VERSION = 2
+CAMPAIGN_STATUSES = frozenset({"uninitialized", "active", "completed", "abandoned"})
 ROOT = Path(__file__).resolve().parent.parent
 ET.register_namespace("xsi", "http://www.w3.org/2001/XMLSchema-instance")
 ET.register_namespace("xsd", "http://www.w3.org/2001/XMLSchema")
@@ -33,9 +36,18 @@ def read_xml(path):
 def atomic_bytes(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + ".tmp")
-    temp.write_bytes(data)
-    os.replace(temp, path)
+    temp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temp.open("wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, path)
+    finally:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
 
 
 def write_xml(path, root):
@@ -193,26 +205,107 @@ def discover(game):
 
 
 class Campaign:
+    """A campaign save with explicit schema defaults and atomic commit boundaries."""
+
     def __init__(self, game=DEFAULT_GAME, data=None):
         self.game = Path(game)
         self.data = Path(data or ROOT / "data")
         self.data.mkdir(parents=True, exist_ok=True)
         self.state_path = self.data / "campaign.json"
-        self.state = {"version": 1, "battles": [], "ship_results": {}, "active_battle": None}
-        if self.state_path.exists():
-            self.state = json.loads(self.state_path.read_text(encoding="utf-8"))
-        self.state.setdefault("campaign", None)
-        self.state.setdefault("inventory", {})
-        self.state.setdefault("active_refit", None)
-        self.state.setdefault("refits", [])
-        # Generation is offline now. Drop a pending editor-generation request
-        # left behind by an older campaign save.
-        self.state.pop("active_generation", None)
+        self.state = self._default_state()
+        had_state_file = self.state_path.exists()
+        before = None
+        if had_state_file:
+            loaded = json.loads(self.state_path.read_text(encoding="utf-8"))
+            if not isinstance(loaded, dict):
+                raise ValueError("Campaign save root is not an object.")
+            self.state = loaded
+            before = copy.deepcopy(loaded)
+            version = self._state_version(loaded)
+            if version > STATE_VERSION:
+                raise ValueError("Campaign save was created by a newer, unsupported version.")
+            migrated = version < STATE_VERSION
+            if migrated:
+                self.backup_campaign(f"schema-v{version}-to-v{STATE_VERSION}")
+            normalized = self._normalize_state()
+            if normalized and not migrated:
+                self.backup_campaign(f"normalize-v{STATE_VERSION}")
+        else:
+            self.state = self._default_state()
+
         from .runtime import GameRuntime
         self.runtime = GameRuntime(self.game, self.exchange)
         self.player = Fleet(ET.fromstring(self.state["player_xml"])) if self.state.get("player_xml") else Fleet.load(self.data / "player.fleet") if (self.data / "player.fleet").exists() else None
         self.enemy = Fleet(ET.fromstring(self.state["enemy_xml"])) if self.state.get("enemy_xml") else Fleet.load(self.data / "enemy.fleet") if (self.data / "enemy.fleet").exists() else None
-        self.ensure_legacy_campaign()
+        self.ensure_legacy_campaign(persist=False)
+        self.sync_ship_state()
+
+        if had_state_file and before is not None and self.state != before:
+            self.persist()
+        elif not had_state_file and self.player is not None:
+            self.persist()
+
+    @staticmethod
+    def _default_state():
+        return {
+            "version": STATE_VERSION,
+            "campaign": None,
+            "campaign_status": "uninitialized",
+            "battles": [],
+            "ship_results": {},
+            "ship_state": {},
+            "owned_hulls": {},
+            "mission_offers": [],
+            "accepted_mission": None,
+            "active_battle": None,
+            "inventory": {},
+            "active_refit": None,
+            "refits": [],
+        }
+
+    @staticmethod
+    def _state_version(state):
+        version = state.get("version", 1)
+        if type(version) is not int or version < 1:
+            raise ValueError("Campaign save version is invalid.")
+        return version
+
+    def _normalize_state(self):
+        """Add v2 fields, migrate older saves, and reject structurally invalid data."""
+        before = copy.deepcopy(self.state)
+        state = self.state
+        for key, value in self._default_state().items():
+            state.setdefault(key, copy.deepcopy(value))
+        state["version"] = STATE_VERSION
+
+        for key in ("inventory", "owned_hulls", "ship_state", "ship_results"):
+            if not isinstance(state[key], dict):
+                raise ValueError(f"Campaign {key} must be an object.")
+        for key in ("battles", "mission_offers", "refits"):
+            if not isinstance(state[key], list):
+                raise ValueError(f"Campaign {key} must be a list.")
+        for key in ("active_battle", "active_refit", "accepted_mission"):
+            if state[key] is not None and not isinstance(state[key], dict):
+                raise ValueError(f"Campaign {key} must be an object or null.")
+
+        meta = state["campaign"]
+        if meta is not None:
+            if not isinstance(meta, dict):
+                raise ValueError("Campaign metadata must be an object or null.")
+            credits = meta.setdefault("credits", 0)
+            if type(credits) is not int or credits < 0:
+                raise ValueError("Campaign credits are invalid.")
+
+        status = state.get("campaign_status")
+        if meta is None:
+            state["campaign_status"] = "uninitialized"
+        elif status not in CAMPAIGN_STATUSES or status == "uninitialized":
+            state["campaign_status"] = "active"
+
+        # Generation is offline now. Drop a pending editor-generation request
+        # left behind by an older campaign save.
+        state.pop("active_generation", None)
+        return state != before
 
     @property
     def exchange(self):
@@ -226,6 +319,51 @@ class Campaign:
     def has_campaign(self):
         return bool(self.state.get("campaign"))
 
+    @property
+    def credits(self):
+        if not self.has_campaign:
+            return 0
+        return int(self.metadata.get("credits", 0))
+
+    @property
+    def campaign_status(self):
+        return self.state.get("campaign_status", "uninitialized")
+
+    @property
+    def accepted_mission(self):
+        return self.state.get("accepted_mission")
+
+    def pending_action(self):
+        if self.state.get("active_battle"):
+            return "battle"
+        if self.state.get("active_refit"):
+            return "refit"
+        if self.state.get("accepted_mission"):
+            return "mission"
+        return None
+
+    def ensure_idle(self):
+        action = self.pending_action()
+        if action:
+            raise ValueError(f"Finish or cancel the pending {action} first.")
+
+    def ensure_no_launch(self):
+        if self.state.get("active_refit"):
+            raise ValueError("Finish or cancel the refit before launching a battle.")
+        if self.state.get("active_battle"):
+            raise ValueError("A battle is already pending. Finish it or cancel it before launching another.")
+
+    @contextmanager
+    def transaction(self):
+        """Persist a state-only change atomically and restore it if the write fails."""
+        previous = copy.deepcopy(self.state)
+        try:
+            yield self
+            self.persist()
+        except Exception:
+            self.state = previous
+            raise
+
     def persist(self):
         atomic_bytes(self.state_path, json.dumps(self.state, indent=2).encode())
 
@@ -233,14 +371,31 @@ class Campaign:
         """Record that this campaign was opened by the player."""
         if not self.has_campaign:
             return
-        stamp = now()
-        self.state["campaign"]["last_played"] = stamp
-        self.persist()
+        with self.transaction():
+            self.state["campaign"]["last_played"] = now()
 
-    def ensure_legacy_campaign(self):
+    def set_credits(self, credits):
+        if type(credits) is not int or credits < 0:
+            raise ValueError("Credits must be a non-negative whole number.")
+        if not self.has_campaign:
+            raise ValueError("No campaign is loaded.")
+        with self.transaction():
+            self.state["campaign"]["credits"] = credits
+
+    def set_campaign_status(self, status):
+        if status not in CAMPAIGN_STATUSES:
+            raise ValueError("Unknown campaign status.")
+        if not self.has_campaign and status != "uninitialized":
+            raise ValueError("No campaign is loaded.")
+        if self.has_campaign and status == "uninitialized":
+            raise ValueError("A loaded campaign cannot be uninitialized.")
+        with self.transaction():
+            self.state["campaign_status"] = status
+
+    def ensure_legacy_campaign(self, persist=True):
         """Give an existing pre-new-campaign save usable campaign metadata."""
         if self.has_campaign:
-            return
+            return False
         has_existing_state = bool(
             self.player
             or self.state.get("battles")
@@ -248,9 +403,11 @@ class Campaign:
             or self.state.get("inventory")
             or self.state.get("active_battle")
             or self.state.get("active_refit")
+            or self.state.get("accepted_mission")
+            or self.state.get("mission_offers")
         )
         if not has_existing_state:
-            return
+            return False
         fleet = self.player
         self.state["campaign"] = {
             "id": str(uuid.uuid4()),
@@ -267,16 +424,44 @@ class Campaign:
             "starting_points": fleet.points if fleet else 0,
             "legacy": True,
         }
-        self.persist()
+        self.state["campaign_status"] = "active"
+        if persist:
+            self.persist()
+        return True
+
+    def sync_ship_state(self, fleet=None):
+        """Keep the per-ship roster state aligned with the current player fleet."""
+        previous = self.state.get("ship_state") or {}
+        current = {}
+        fleet = self.player if fleet is None else fleet
+        if fleet:
+            for ship in fleet.ships:
+                key = ship.findtext("Key")
+                if not key:
+                    continue
+                item = copy.deepcopy(previous.get(key, {}))
+                item.setdefault("condition", 1.0)
+                item.setdefault("status", "ready")
+                current[key] = item
+        if current != self.state.get("ship_state"):
+            self.state["ship_state"] = current
+            return True
+        return False
 
     def backup_campaign(self, reason="new-campaign"):
-        """Copy the current campaign's top-level state before replacing it."""
+        """Copy the current campaign's top-level files before an explicit overwrite."""
         files = [self.state_path, self.data / "player.fleet", self.data / "enemy.fleet"]
         existing = [path for path in files if path.exists()]
         if not existing:
             return None
-        stamp = now().replace(":", "-")
-        directory = self.data / "campaign-backups" / f"{stamp}-{reason}"
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        safe_reason = "".join(char if char.isalnum() or char in "-_" else "-" for char in str(reason)).strip("-") or "backup"
+        base = f"{stamp}-{safe_reason}"
+        directory = self.data / "campaign-backups" / base
+        suffix = 2
+        while directory.exists():
+            directory = self.data / "campaign-backups" / f"{base}-{suffix}"
+            suffix += 1
         directory.mkdir(parents=True, exist_ok=False)
         for path in existing:
             shutil.copy2(path, directory / path.name)
@@ -284,8 +469,7 @@ class Campaign:
 
     def start_new_campaign(self, name, commander, faction, credits, starter, campaign_id=None):
         """Initialize this save directory with a fresh campaign and cloned starter fleet."""
-        if self.state.get("active_battle") or self.state.get("active_refit"):
-            raise ValueError("Finish or cancel the pending battle or refit before starting a new campaign.")
+        self.ensure_idle()
         name = str(name).strip()
         commander = str(commander).strip()
         if not name:
@@ -310,30 +494,23 @@ class Campaign:
 
         self.backup_campaign()
         previous = (copy.deepcopy(self.state), self.player, self.enemy)
-        self.state = {
-            "version": 1,
-            "campaign": {
-                "id": str(campaign_id or uuid.uuid4()),
-                "name": name,
-                "commander": commander,
-                "faction": faction,
-                "credits": credits,
-                "created": now(),
-                "started": now(),
-                "last_played": now(),
-                "starting_fleet": starter.name,
-                "starting_fleet_source": str(starter.source) if starter.source else "",
-                "starting_ships": len(starter.ships),
-                "starting_points": starter.points,
-                "legacy": False,
-            },
-            "battles": [],
-            "ship_results": {},
-            "active_battle": None,
-            "inventory": {},
-            "active_refit": None,
-            "refits": [],
+        self.state = self._default_state()
+        self.state["campaign"] = {
+            "id": str(campaign_id or uuid.uuid4()),
+            "name": name,
+            "commander": commander,
+            "faction": faction,
+            "credits": credits,
+            "created": now(),
+            "started": now(),
+            "last_played": now(),
+            "starting_fleet": starter.name,
+            "starting_fleet_source": str(starter.source) if starter.source else "",
+            "starting_ships": len(starter.ships),
+            "starting_points": starter.points,
+            "legacy": False,
         }
+        self.state["campaign_status"] = "active"
         self.player = starter
         self.enemy = None
         try:
@@ -349,19 +526,22 @@ class Campaign:
     def save_fleets(self):
         if self.player:
             self.player.validate()
+        if self.enemy:
+            self.enemy.validate()
+        if self.player:
             self.state["player_xml"] = ET.tostring(self.player.root, encoding="unicode")
-            self.persist()
-            self.player.save(self.data / "player.fleet")
         if self.enemy:
             self.state["enemy_xml"] = ET.tostring(self.enemy.root, encoding="unicode")
+        self.sync_ship_state()
+        if self.player or self.enemy or self.has_campaign:
             self.persist()
+        if self.player:
+            self.player.save(self.data / "player.fleet")
+        if self.enemy:
             self.enemy.save(self.data / "enemy.fleet")
 
     def prepare(self, publish=True):
-        if self.state.get("active_refit"):
-            raise ValueError("Finish or cancel the refit before launching a battle.")
-        if self.state.get("active_battle"):
-            raise ValueError("A battle is already pending. Finish it or cancel it before launching another.")
+        self.ensure_no_launch()
         if not self.player or not self.enemy:
             raise ValueError("Load a player fleet and generate an enemy first.")
         self.save_fleets()
@@ -488,16 +668,11 @@ class Campaign:
                 if item.get("Key") not in valid_keys or item["Key"] in updates:
                     raise ValueError("Battle report contains an unknown or duplicate player ship identity.")
                 updates[item["Key"]] = item
-        previous = copy.deepcopy(self.state)
-        self.state["ship_results"].update(updates)
-        self.state["battles"].append(record)
-        self.state["active_battle"] = None
-        self.queue_ack(result, "battle")
-        try:
-            self.persist()
-        except Exception:
-            self.state = previous
-            raise
+        with self.transaction():
+            self.state["ship_results"].update(updates)
+            self.state["battles"].append(record)
+            self.state["active_battle"] = None
+            self.queue_ack(result, "battle")
         self.flush_ack()
         return record
 
@@ -510,6 +685,6 @@ class Campaign:
         root = ET.Element("Cancellation")
         put(root, "Id", active["id"])
         write_xml(self.exchange / "cancel.xml", root)
-        self.state["battles"].append(dict(active, status="cancelled"))
-        self.state["active_battle"] = None
-        self.persist()
+        with self.transaction():
+            self.state["battles"].append(dict(active, status="cancelled"))
+            self.state["active_battle"] = None

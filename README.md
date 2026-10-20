@@ -19,9 +19,15 @@ A Windows desktop proof of concept with a shared equipment inventory, native in-
 
 The game uses the normal editor, with additional inventory checks on installation, component paste and undo/redo. If a component removed from Ship A has been installed on Ship B, undoing the removal on A is blocked until another copy is available. Native per-ship history is retained; it is not replaced with a global undo stack. Whole-fitting paste, roster changes and normal save/load/test actions are blocked during campaign refits. Ordinary editor sessions and skirmishes do not use these restrictions.
 
-Buying/selling and roster edits are locked while a battle or refit is pending. Purchases before a session survive cancellation. The original fleet and spare inventory remain approved until confirmation. Confirmation atomically updates both in `data/campaign.json`; `data/player.fleet` is a derived export. Restarting the app retains the pending session. **Continue / resume editor** restarts from the last exported draft, or from the session input if no draft was exported. Unsaved in-game changes are not recovered after a crash. Use the overlay to cancel in game, or cancel from the app.
+Buying/selling, roster edits and refits are locked while a mission, battle or refit is pending. Purchases before a session survive cancellation. The original fleet and spare inventory remain approved until confirmation. Confirmation atomically updates both in `data/campaign.json`; `data/player.fleet` is a derived export. Restarting the app retains the pending session. **Continue / resume editor** restarts from the last exported draft, or from the session input if no draft was exported. Unsaved in-game changes are not recovered after a crash. Use the overlay to cancel in game, or cancel from the app.
 
 This milestone tracks component **types and quantities**, not individual component condition. Ammunition, missile/craft construction and damage carryover are outside inventory tracking. Existing ammunition/design data remains native game data. The store catalogue comes from installed stock component assets; generated-enemy fitting statistics come from the bridge's exported catalogue rather than being hard-coded in Python. Imported fleets and the test-fleet generator are sandbox setup tools, not inventory-controlled ways to purchase hulls.
+
+## Campaign save data
+
+Campaign saves use schema version 2. On open, version 1 saves are first copied to `campaign-backups/<timestamp>-schema-v1-to-v2/`, then migrated in place. A current-version save that needs new fields is also backed up before normalization. The JSON save includes campaign metadata and credits, campaign status, per-ship roster state, owned hulls, mission offers, an accepted mission, inventory, battle/refit history and pending operations. `player.fleet` and `enemy.fleet` remain derived exports; `campaign.json` is authoritative.
+
+State changes commit atomically, and a failed commit restores the previous in-memory state. **Save now** and **Save and exit** also create a timestamped backup under the campaign's `campaign-backups/` folder. Pending battles, refits and accepted missions survive restarts, and **Continue** returns to the relevant tab. Missions themselves remain future work; the save fields and resume hook are in place.
 
 The runtime patches use vendored **Harmony 2.3.3**, net472 merged assembly, from `https://www.nuget.org/packages/Lib.Harmony/2.3.3`. Its MIT license is included in `bridge/lib/Harmony-LICENSE.txt`; no game libraries are distributed. Game updates can require adapting editor hooks and rebuilding the bridge.
 
@@ -36,11 +42,12 @@ Requirements: Windows, Python 3.10+ with Tkinter, NEBULOUS: Fleet Command, and S
    ```
 
 2. Start NEBULOUS normally. Open **Mods**, enable **NBC Campaign Bridge**, apply the change, and return to the main menu. This is a one-time step. A running game must be restarted after updating the bridge DLL. Returning to the main menu is enough for the bridge to export the fitting catalogue.
-3. Double-click **Start Campaign.cmd**, or run `python app.py`. The app opens on the main menu with **Continue**, **New Campaign**, **Load Campaign** and **Exit**. **Continue** is shown only when the last-played campaign is valid. **New Campaign** creates an independent save under `data/campaigns/<id>/`, with its own fleet, inventory, credits, battle history and pending operations. The existing `data/campaign.json` save remains available as the legacy **root** campaign. **Load Campaign** lists saved campaigns with commander, faction, credits, fleet size, last-played time and save status; select one and choose **Load Selected**. A campaign with a pending battle or refit must be finished or cancelled before another campaign can be loaded. The open campaign is locked, and the lock moves with you when you switch saves.
+3. Double-click **Start Campaign.cmd**, or run `python app.py`. The app opens on the main menu with **Continue**, **New Campaign**, **Load Campaign** and **Exit**. **Continue** is shown only when the last-played campaign is valid. **New Campaign** creates an independent save under `data/campaigns/<id>/`, with its own fleet, inventory, credits, battle history and pending operations. The existing `data/campaign.json` save remains available as the legacy **root** campaign. **Load Campaign** lists saved campaigns with commander, faction, credits, fleet size, last-played time and save status; select one and choose **Load Selected**. A campaign with a pending mission, battle or refit must be finished or cancelled before another campaign can be loaded. The open campaign is locked, and the lock moves with you when you switch saves.
 4. On **Fleet**, load an installed fleet or import a `.fleet` file. Rename ships or change hull numbers. Use the native refit workflow above to change equipment. Original fleet files are preserved.
 5. On **Battle**, choose an enemy faction and target point budget, then **Generate enemy**. The app fits new ships and loadouts from the native catalogue. The actual total may differ from the target.
 6. Click **Run battle → NEBULOUS**. The game opens if necessary. If it is already running, return to its main menu. The bridge creates a local skirmish, assigns your fleet and one AI enemy, validates settings and launches it. Deploy your ships and play normally.
 7. When the battle ends, **Debrief** fills automatically. Return to the external app to view the outcome, ship condition, casualties and damage statistics. NEBULOUS closes automatically after the app validates and saves the report, and the app brings the Debrief forward.
+8. Use the gear at the top-right of the campaign header to open **Settings**. **Save now** forces a save and backs up the previous save, **Resume** returns to the previous tab, and **Save and exit** / **Exit without saving** close Campaign Command with or without a final save. The campaign still saves automatically as you play.
 
 To use another game location:
 
@@ -51,8 +58,9 @@ python app.py --game 'D:\SteamLibrary\steamapps\common\Nebulous'
 ## Scope of this prototype
 
 - Native `.fleet` import/export, names, hull numbers, fleet composition, equipment substitutions and complete loadouts.
-- Persistent local app saves and per-battle archives. Closing and reopening the app retains the pending battle and its eventual result.
+- Versioned, atomically written local saves with schema migration, previous-save backups and per-battle archives. Closing and reopening the app retains pending missions, battles and refits and their eventual results.
 - Multiple independent campaigns selected from the main menu, with metadata, last-played tracking and corrupt-save reporting.
+- Initial Settings screen with manual save, resume, save-and-exit and exit-without-saving controls.
 - Offline random enemy ships and component loadouts generated from native stock fitting data. v1 supports direct-fire weapons and bulk magazines; missiles, hangars and craft are excluded.
 - Automatic handoff to a real local skirmish and automatic capture of a full native after-action report.
 - Report records include a battle ID and player ship IDs; importing a completed battle twice is prevented.
@@ -86,7 +94,7 @@ data/enemy.fleet            Legacy root campaign's generated enemy (ignored by G
 data/campaign.json          Legacy root campaign metadata, credits, battle history and ship status
 data/campaigns/<id>/         Independent campaign saves with their own state and archives
 data/campaigns.json         Last-played campaign pointer
-data/campaign-backups/      Top-level files backed up when a save is explicitly replaced
+data/campaign-backups/      Top-level files backed up before migration, replacement or a manual save
 data/battles/<id>/           Input fleets, native report.xml and result.xml
 data/refits/<id>/            Original fleet, revision inputs and exported drafts
 tests/fixtures/              Synthetic fitting catalogue used by offline tests

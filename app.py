@@ -12,6 +12,66 @@ from nbc.refit import RefitService, installed
 BG, PANEL, TEXT, MUTED, ACCENT = "#101820", "#182530", "#e4edf4", "#9aafbf", "#53d4b1"
 
 
+class Tooltip:
+    """Small dependency-free hover label for compact controls."""
+
+    def __init__(self, widget, text, delay=450):
+        self.widget = widget
+        self.text = text
+        self.delay = delay
+        self.tip = None
+        self.after_id = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+        widget.bind("<Destroy>", self._hide, add="+")
+
+    def _schedule(self, event=None):
+        self._cancel()
+        self.after_id = self.widget.after(self.delay, self._show)
+
+    def _cancel(self):
+        if self.after_id is not None:
+            try:
+                self.widget.after_cancel(self.after_id)
+            except tk.TclError:
+                pass
+            self.after_id = None
+
+    def _show(self):
+        self.after_id = None
+        if self.tip is not None or not self.widget.winfo_exists():
+            return
+        self.tip = tk.Toplevel(self.widget)
+        self.tip.wm_overrideredirect(True)
+        self.tip.wm_attributes("-topmost", True)
+        tk.Label(
+            self.tip,
+            text=self.text,
+            background=PANEL,
+            foreground=TEXT,
+            padx=9,
+            pady=5,
+            relief="solid",
+            borderwidth=1,
+        ).pack()
+        self.tip.update_idletasks()
+        width = self.tip.winfo_reqwidth()
+        x = self.widget.winfo_rootx() + (self.widget.winfo_width() - width) // 2
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 7
+        x = min(max(4, x), self.widget.winfo_screenwidth() - width - 4)
+        self.tip.wm_geometry(f"+{x}+{y}")
+
+    def _hide(self, event=None):
+        self._cancel()
+        if self.tip is not None:
+            try:
+                self.tip.destroy()
+            except tk.TclError:
+                pass
+            self.tip = None
+
+
 class App(tk.Tk):
     def __init__(self, game=DEFAULT_GAME, data=None):
         super().__init__()
@@ -96,7 +156,7 @@ class App(tk.Tk):
         self.selected = 0
         self.refresh()
         self.show_main()
-        self.tabs.select(self.fleet_tab)
+        self.resume_pending_campaign()
 
     def _style(self):
         s = ttk.Style(self)
@@ -111,6 +171,10 @@ class App(tk.Tk):
         s.map("TButton", background=[("active", "#355669")], foreground=[("disabled", "#667985")])
         s.configure("Accent.TButton", background=ACCENT, foreground="#092b25", font=("Segoe UI Semibold", 10))
         s.map("Accent.TButton", background=[("active", "#83e7cc")])
+        s.configure("Gear.TButton", background=PANEL, foreground=ACCENT, font=("Segoe UI Symbol", 13), padding=(9, 3))
+        s.map("Gear.TButton", background=[("active", "#2a4354")], foreground=[("active", "#8cf0d6")])
+        s.configure("Danger.TButton", background="#43262d", foreground="#ffd6dc")
+        s.map("Danger.TButton", background=[("active", "#5c333d")], foreground=[("disabled", "#7b666b")])
         s.configure("TEntry", fieldbackground=PANEL, foreground=TEXT, padding=7, insertcolor=TEXT)
         s.configure("TCombobox", fieldbackground=PANEL, foreground=TEXT, padding=6, arrowsize=15)
         s.map("TCombobox", fieldbackground=[("readonly", PANEL)], foreground=[("readonly", TEXT)])
@@ -128,6 +192,18 @@ class App(tk.Tk):
         shell = self.main
         header = ttk.Frame(shell)
         header.pack(fill="x")
+        settings_bar = ttk.Frame(header)
+        settings_bar.pack(side="right", anchor="n")
+        self.settings_button = ttk.Button(
+            settings_bar,
+            text="⚙",
+            width=3,
+            style="Gear.TButton",
+            command=self.show_settings,
+            takefocus=True,
+        )
+        self.settings_button.pack(side="right")
+        self.settings_tooltip = Tooltip(self.settings_button, "Settings")
         heading = ttk.Frame(header)
         heading.pack(side="left", fill="x", expand=True)
         ttk.Label(heading, text="CAMPAIGN COMMAND", foreground=ACCENT, font=("Segoe UI Semibold", 10)).pack(anchor="w")
@@ -182,6 +258,7 @@ class App(tk.Tk):
         ttk.Label(right, text="Buy spare equipment in Inventory before opening a refit.", style="Muted.TLabel").pack(anchor="w")
         self.equipment = self.tree(right, ("component", "contents"), ("INSTALLED EQUIPMENT", "LOAD"), (250, 150), height=4)
         self.build_refit_tabs()
+        self.build_settings_screen()
 
         ttk.Label(self.battle_tab, text="Prepare an engagement", style="Sub.TLabel").pack(anchor="w")
         ttk.Label(self.battle_tab, text="Build randomly fitted ships near your target budget. Ships are fitted offline from the native catalogue exported by NEBULOUS.", style="Muted.TLabel").pack(anchor="w", pady=8)
@@ -266,6 +343,8 @@ class App(tk.Tk):
 
     def show_main(self):
         self.menu.pack_forget()
+        self.settings_screen.pack_forget()
+        self.tabs.pack(fill="both", expand=True)
         self.main.pack(fill="both", expand=True)
 
     def continue_campaign(self):
@@ -278,8 +357,9 @@ class App(tk.Tk):
         self.campaign.mark_played()
         self.show_main()
         self.refresh()
-        self.tabs.select(self.fleet_tab)
-        self.status.set("Campaign loaded. Ready to continue.")
+        pending = self.resume_pending_campaign()
+        if not pending:
+            self.status.set("Campaign loaded. Ready to continue.")
 
     def load_campaign(self):
         LoadCampaignDialog(self)
@@ -292,11 +372,12 @@ class App(tk.Tk):
             self.campaign.mark_played()
             self.show_main()
             self.refresh()
-            self.tabs.select(self.fleet_tab)
-            self.status.set(f"Campaign '{self.campaign.metadata.get('name', 'Campaign')}' loaded.")
+            pending = self.resume_pending_campaign()
+            if not pending:
+                self.status.set(f"Campaign '{self.campaign.metadata.get('name', 'Campaign')}' loaded.")
             return
-        if self.campaign.state.get("active_battle") or self.campaign.state.get("active_refit") or self.refits.active:
-            raise ValueError("Finish or cancel the pending battle or refit before loading another campaign.")
+        if self.campaign.pending_action():
+            raise ValueError("Finish or cancel the pending mission, battle or refit before loading another campaign.")
         new_lock = self._acquire_lock(info.path)
         try:
             campaign = Campaign(self.campaign.game, info.path)
@@ -306,7 +387,114 @@ class App(tk.Tk):
             new_lock.close()
             raise
         self._switch_campaign(campaign, info.id, new_lock)
-        self.status.set(f"Campaign '{campaign.metadata.get('name', 'Campaign')}' loaded.")
+        if not campaign.pending_action():
+            self.status.set(f"Campaign '{campaign.metadata.get('name', 'Campaign')}' loaded.")
+
+    def resume_pending_campaign(self):
+        pending = self.campaign.pending_action()
+        if pending == "refit":
+            self.tabs.select(self.refit_tab)
+            self.status.set("Resumed pending refit. Confirm, continue or cancel it.")
+        elif pending == "battle":
+            self.tabs.select(self.battle_tab)
+            self.status.set("Resumed pending battle. Waiting for NEBULOUS.")
+        elif pending == "mission":
+            self.tabs.select(self.battle_tab)
+            self.status.set("Accepted mission restored from the save.")
+        else:
+            self.tabs.select(self.fleet_tab)
+        return pending
+
+    def build_settings_screen(self):
+        self.settings_screen = ttk.Frame(self.main, padding=(0, 12))
+        ttk.Label(
+            self.settings_screen,
+            text="SETTINGS",
+            foreground=ACCENT,
+            font=("Segoe UI Semibold", 10),
+        ).pack(anchor="w")
+        ttk.Label(self.settings_screen, text="Campaign controls", style="Sub.TLabel").pack(anchor="w", pady=(4, 3))
+        ttk.Label(
+            self.settings_screen,
+            text="Save, resume, or leave the current campaign.",
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(0, 8))
+        panel = ttk.Frame(self.settings_screen)
+        panel.pack(fill="x", pady=(18, 0))
+        self.settings_campaign = tk.StringVar(value="")
+        ttk.Label(
+            panel,
+            textvariable=self.settings_campaign,
+            foreground=ACCENT,
+            wraplength=1100,
+        ).pack(anchor="w", pady=(0, 16))
+        actions = ttk.Frame(panel)
+        actions.pack(fill="x")
+        ttk.Button(actions, text="Save now", command=self.save_campaign_now).pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="Resume", command=self.resume_campaign, style="Accent.TButton").pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="Save and exit", command=self.save_and_exit).pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="Exit without saving", command=self.exit_without_saving, style="Danger.TButton").pack(side="left")
+        self.settings_message = tk.StringVar(value="Campaign changes are also saved automatically as you play.")
+        ttk.Label(
+            panel,
+            textvariable=self.settings_message,
+            foreground=MUTED,
+            wraplength=1100,
+        ).pack(anchor="w", pady=(16, 0))
+        ttk.Label(
+            panel,
+            text="Exit without saving skips only the final save; changes already auto-saved remain.",
+            style="Muted.TLabel",
+            wraplength=1100,
+        ).pack(anchor="w", pady=(8, 0))
+        self._refresh_settings()
+
+    def _refresh_settings(self):
+        meta = self.campaign.metadata
+        if not meta:
+            self.settings_campaign.set("No campaign is loaded.")
+            return
+        faction = meta.get("faction", "").replace("Stock/", "")
+        ships = len(self.campaign.player.ships) if self.campaign.player else 0
+        self.settings_campaign.set(
+            f"{meta.get('name', 'Campaign')}  /  {meta.get('commander') or 'No commander'}  /  "
+            f"{faction}  /  {int(meta.get('credits', 0)):,} credits  /  {ships} ships"
+        )
+
+    def show_settings(self):
+        self.tabs.pack_forget()
+        self.settings_screen.pack(fill="both", expand=True)
+        self._refresh_settings()
+        self.status.set("Campaign settings.")
+
+    def resume_campaign(self):
+        self.settings_screen.pack_forget()
+        self.tabs.pack(fill="both", expand=True)
+        self.status.set("Resumed campaign.")
+
+    def _save_campaign(self, backup=False):
+        if not self.campaign.has_campaign:
+            return None
+        backup_path = self.campaign.backup_campaign("manual-save") if backup else None
+        self.campaign.save_fleets()
+        return backup_path
+
+    def save_campaign_now(self):
+        try:
+            backup_path = self._save_campaign(backup=True)
+        except Exception as exc:
+            self.settings_message.set(f"Save failed: {exc}")
+            self.status.set(f"Save failed: {exc}")
+            messagebox.showerror("Save campaign", str(exc), parent=self)
+            return
+        self.settings_message.set("Campaign saved. Previous save backed up." if backup_path else "Campaign saved.")
+        self.status.set("Campaign saved.")
+
+    def save_and_exit(self):
+        self._shutdown(save=True, backup=True)
+
+    def exit_without_saving(self):
+        self._shutdown(save=False)
 
     def build_refit_tabs(self):
         self.inventory_tab = ttk.Frame(self.tabs, padding=(0, 12))
@@ -363,10 +551,10 @@ class App(tk.Tk):
             catalog = self.refits.catalog()
             owned = self.campaign.state["inventory"]
             fitted = installed(self.campaign.player) if self.campaign.player else {}
-            locked = bool(self.refits.active or self.campaign.state.get("active_battle"))
+            locked = bool(self.campaign.pending_action())
             self.buy_button.configure(state="disabled" if locked or not catalog else "normal")
             self.sell_button.configure(state="disabled" if locked else "normal")
-            self.inventory_note.set("Inventory locked until the pending refit/battle finishes." if locked else f"{sum(owned.values())} spare components owned. " + (f"{len(catalog)} stock components exported by NEBULOUS." if catalog else "Start NEBULOUS with bridge 0.5.0 to export the component catalogue."))
+            self.inventory_note.set("Inventory locked until the pending mission, refit or battle finishes." if locked else f"{sum(owned.values())} spare components owned. " + (f"{len(catalog)} stock components exported by NEBULOUS." if catalog else "Start NEBULOUS with bridge 0.5.0 to export the component catalogue."))
             query = self.catalog_search.get().casefold()
             entries = {k: v for k, v in catalog.items()}
             for key in owned.keys() | fitted.keys():
@@ -399,7 +587,7 @@ class App(tk.Tk):
 
     def refresh_refit(self):
         active = self.refits.active
-        busy = bool(active or self.campaign.state.get("active_battle"))
+        busy = bool(self.campaign.pending_action())
         self.refit_start_button.configure(state="disabled" if busy else "normal")
         self.refit_resume_button.configure(state="normal" if active else "disabled")
         self.refit_cancel_button.configure(state="normal" if active else "disabled")
@@ -548,7 +736,7 @@ class App(tk.Tk):
         self.history.delete(*self.history.get_children())
         for b in reversed(self.campaign.state["battles"]):
             self.history.insert("", "end", iid=b["id"], values=(b["created"][:19].replace("T", " ") + " UTC", b.get("outcome", b["status"]), b.get("duration", "—"), b["id"]))
-        busy = bool(self.campaign.state.get("active_battle") or self.refits.active)
+        busy = bool(self.campaign.pending_action())
         self.run_button.configure(state="disabled" if busy or not self.campaign.player or not self.campaign.enemy else "normal")
         self.generate_button.configure(state="disabled" if busy or not self.campaign.has_campaign else "normal")
         self._refresh_menu()
@@ -698,10 +886,39 @@ class App(tk.Tk):
             display = f"{float(condition):.0%}" if condition else "—"
             self.results.insert("", "end", values=(s.get("Side"), s.get("Name"), s.get("Status"), display, f"{s.get('FinalCrew', '?')}/{s.get('OriginalCrew', '?')}", s.get("DamageDealt")))
 
-    def close(self):
-        self.guarded(self.campaign.save_fleets)
-        self.save_lock.close()
+    def _release_lock(self):
+        lock = getattr(self, "save_lock", None)
+        if lock is not None:
+            try:
+                lock.close()
+            except OSError:
+                pass
+            self.save_lock = None
+
+    def _shutdown(self, save=True, backup=False):
+        if save:
+            try:
+                self._save_campaign(backup=backup)
+            except Exception as exc:
+                self.status.set(f"Save failed: {exc}")
+                messagebox.showerror(
+                    "Exit Campaign Command",
+                    f"Could not save before exiting:\n\n{exc}",
+                    parent=self,
+                )
+                return False
+        elif not messagebox.askyesno(
+            "Exit without saving",
+            "Exit Campaign Command without a final save?\n\nChanges already auto-saved will remain.",
+            parent=self,
+        ):
+            return False
+        self._release_lock()
         self.destroy()
+        return True
+
+    def close(self):
+        self._shutdown(save=True)
 
 
 class LoadCampaignDialog(tk.Toplevel):

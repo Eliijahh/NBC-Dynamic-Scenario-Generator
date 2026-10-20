@@ -1,7 +1,6 @@
 """Generate an opposing fleet from the bridge-exported native fitting catalogue."""
 from __future__ import annotations
 
-import copy
 import random
 import uuid
 import xml.etree.ElementTree as ET
@@ -77,13 +76,8 @@ class GenerationService:
             completed=now(),
         )
         enemy.save(self.c.data / "enemy.fleet")
-        previous = copy.deepcopy(self.c.state)
-        self.c.state["enemy_xml"] = ET.tostring(enemy.root, encoding="unicode")
-        self.c.state["last_generation"] = record
-        try:
-            self.c.persist()
-        except Exception:
-            self.c.state = previous
-            raise
+        with self.c.transaction():
+            self.c.state["enemy_xml"] = ET.tostring(enemy.root, encoding="unicode")
+            self.c.state["last_generation"] = record
         self.c.enemy = enemy
         return record
