@@ -20,7 +20,7 @@ class RuntimeTests(unittest.TestCase):
         (self.c.game / 'Mods/NBCBridge').mkdir(parents=True)
         (self.c.game / 'Nebulous.exe').touch()
         (self.c.game / 'Mods/NBCBridge/NBCBridge.dll').touch()
-        (self.c.game / 'Mods/NBCBridge/ModInfo.xml').write_text('<ModInfo><ModVer>0.3.0</ModVer></ModInfo>')
+        (self.c.game / 'Mods/NBCBridge/ModInfo.xml').write_text('<ModInfo><ModVer>0.5.0</ModVer></ModInfo>')
         self.processes = []
         self.child = Mock()
         self.child.poll.return_value = None
@@ -131,7 +131,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_old_bridge_rejected_before_game_launch(self):
         (self.c.game / 'Mods/NBCBridge/ModInfo.xml').write_text('<ModInfo><ModVer>0.2.0</ModVer></ModInfo>')
-        with self.assertRaisesRegex(ValueError, '0.3'):
+        with self.assertRaisesRegex(ValueError, '0.5'):
             self.refits.start()
         self.launcher.assert_not_called()
 

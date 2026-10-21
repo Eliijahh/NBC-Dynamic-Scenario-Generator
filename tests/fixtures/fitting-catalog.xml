@@ -1,0 +1,189 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FittingCatalog>
+  <Format>1</Format>
+  <GameVersion>test</GameVersion>
+  <Faction>
+    <Key>Stock/Alliance</Key>
+    <Name>Alliance</Name>
+    <Munitions>
+      <Munition>
+        <Key>Stock/120mm AP</Key>
+        <Name>120mm AP</Name>
+        <Storage>1</Storage>
+        <Points>1</Points>
+        <Division>10</Division>
+        <SimMethod>Ballistic</SimMethod>
+        <Role>Offensive</Role>
+        <Type>Projectile</Type>
+        <Class>AP</Class>
+        <Subclass>120mm</Subclass>
+      </Munition>
+      <Munition>
+        <Key>Stock/120mm HE</Key>
+        <Name>120mm HE</Name>
+        <Storage>1</Storage>
+        <Points>1</Points>
+        <Division>10</Division>
+        <SimMethod>Ballistic</SimMethod>
+        <Role>Offensive</Role>
+        <Type>Projectile</Type>
+        <Class>HE</Class>
+        <Subclass>120mm</Subclass>
+      </Munition>
+    </Munitions>
+    <Hulls>
+      <Hull>
+        <Key>Stock/Test Frigate</Key>
+        <Name>Test Frigate</Name>
+        <Class>Frigate</Class>
+        <Points>100</Points>
+        <Crew>40</Crew>
+        <Sockets>
+          <Socket><Key>bow</Key><Type>0</Type><X>3</X><Y>1</Y><Z>1</Z><Overhang>0</Overhang><Default>Stock/Test Cannon</Default></Socket>
+          <Socket><Key>stern</Key><Type>0</Type><X>3</X><Y>1</Y><Z>1</Z><Overhang>0</Overhang><Default></Default></Socket>
+          <Socket><Key>hold-a</Key><Type>1</Type><X>2</X><Y>2</Y><Z>2</Z><Overhang>0</Overhang><Default></Default></Socket>
+          <Socket><Key>hold-b</Key><Type>1</Type><X>2</X><Y>2</Y><Z>2</Z><Overhang>0</Overhang><Default></Default></Socket>
+          <Socket><Key>engine-a</Key><Type>2</Type><X>3</X><Y>3</Y><Z>3</Z><Overhang>0</Overhang><Default></Default></Socket>
+          <Socket><Key>engine-b</Key><Type>2</Type><X>2</X><Y>2</Y><Z>2</Z><Overhang>0</Overhang><Default></Default></Socket>
+        </Sockets>
+      </Hull>
+    </Hulls>
+    <Components>
+      <Component>
+        <Key>Stock/Test Drive</Key><Name>Test Drive</Name><Category>Engineering - Drive</Category>
+        <Type>2</Type><X>2</X><Y>2</Y><Z>2</Z><Overhang>0</Overhang><Rotate>0</Rotate>
+        <CanTile>0</CanTile><ConsistentCost>0</ConsistentCost><Points>20</Points>
+        <Compounding>0</Compounding><CompoundingClass></CompoundingClass><FirstFree>0</FirstFree>
+        <CompoundingMultiplier>1</CompoundingMultiplier><Crew>5</Crew>
+        <Drive>1</Drive><Powerplant>0</Powerplant><Command>0</Command><CommandAll>0</CommandAll>
+        <Sensor>0</Sensor><BulkMagazine>0</BulkMagazine><Hangar>0</Hangar><Weapon>0</Weapon>
+        <ResourcesProvided/><ResourcesRequired><Resource><Name>Power</Name><Amount>2</Amount><PerUnit>0</PerUnit><OnlyWhenOperating>0</OnlyWhenOperating></Resource></ResourcesRequired>
+      </Component>
+      <Component>
+        <Key>Stock/Test Reactor</Key><Name>Test Reactor</Name><Category>Engineering - Powerplant</Category>
+        <Type>2</Type><X>2</X><Y>2</Y><Z>2</Z><Overhang>0</Overhang><Rotate>0</Rotate>
+        <CanTile>0</CanTile><ConsistentCost>0</ConsistentCost><Points>30</Points>
+        <Compounding>0</Compounding><CompoundingClass></CompoundingClass><FirstFree>0</FirstFree>
+        <CompoundingMultiplier>1</CompoundingMultiplier><Crew>5</Crew>
+        <Drive>0</Drive><Powerplant>1</Powerplant><Command>0</Command><CommandAll>0</CommandAll>
+        <Sensor>0</Sensor><BulkMagazine>0</BulkMagazine><Hangar>0</Hangar><Weapon>0</Weapon>
+        <ResourcesProvided><Resource><Name>Power</Name><Amount>30</Amount><PerUnit>0</PerUnit><OnlyWhenOperating>0</OnlyWhenOperating></Resource></ResourcesProvided><ResourcesRequired/>
+      </Component>
+      <Component>
+        <Key>Stock/Test CIC</Key><Name>Test CIC</Name><Category>Command</Category>
+        <Type>1</Type><X>1</X><Y>1</Y><Z>1</Z><Overhang>0</Overhang><Rotate>0</Rotate>
+        <CanTile>0</CanTile><ConsistentCost>0</ConsistentCost><Points>20</Points>
+        <Compounding>0</Compounding><CompoundingClass></CompoundingClass><FirstFree>0</FirstFree>
+        <CompoundingMultiplier>1</CompoundingMultiplier><Crew>10</Crew>
+        <Drive>0</Drive><Powerplant>0</Powerplant><Command>1</Command><CommandAll>1</CommandAll>
+        <Sensor>0</Sensor><BulkMagazine>0</BulkMagazine><Hangar>0</Hangar><Weapon>0</Weapon>
+        <ResourcesProvided/><ResourcesRequired><Resource><Name>Power</Name><Amount>2</Amount><PerUnit>0</PerUnit><OnlyWhenOperating>0</OnlyWhenOperating></Resource></ResourcesRequired>
+      </Component>
+      <Component>
+        <Key>Stock/Test Radar</Key><Name>Test Radar</Name><Category>Sensors</Category>
+        <Type>0</Type><X>1</X><Y>1</Y><Z>1</Z><Overhang>0</Overhang><Rotate>0</Rotate>
+        <CanTile>0</CanTile><ConsistentCost>0</ConsistentCost><Points>10</Points>
+        <Compounding>0</Compounding><CompoundingClass></CompoundingClass><FirstFree>0</FirstFree>
+        <CompoundingMultiplier>1</CompoundingMultiplier><Crew>2</Crew>
+        <Drive>0</Drive><Powerplant>0</Powerplant><Command>0</Command><CommandAll>0</CommandAll>
+        <Sensor>1</Sensor><BulkMagazine>0</BulkMagazine><Hangar>0</Hangar><Weapon>0</Weapon>
+        <ResourcesProvided/><ResourcesRequired><Resource><Name>Power</Name><Amount>2</Amount><PerUnit>0</PerUnit><OnlyWhenOperating>0</OnlyWhenOperating></Resource></ResourcesRequired>
+      </Component>
+      <Component>
+        <Key>Stock/Test Cannon</Key><Name>Test Cannon</Name><Category>Weapons - Projectile</Category>
+        <Type>0</Type><X>2</X><Y>1</Y><Z>1</Z><Overhang>0</Overhang><Rotate>0</Rotate>
+        <CanTile>0</CanTile><ConsistentCost>0</ConsistentCost><Points>40</Points>
+        <Compounding>0</Compounding><CompoundingClass></CompoundingClass><FirstFree>0</FirstFree>
+        <CompoundingMultiplier>1</CompoundingMultiplier><Crew>4</Crew>
+        <Drive>0</Drive><Powerplant>0</Powerplant><Command>0</Command><CommandAll>0</CommandAll>
+        <Sensor>0</Sensor><BulkMagazine>0</BulkMagazine><Hangar>0</Hangar><Weapon>1</Weapon>
+        <WepType>Projectile</WepType><Role>Offensive</Role><NeedsAmmo>1</NeedsAmmo><AmmoSelection>1</AmmoSelection>
+        <AllowGrouping>1</AllowGrouping><GroupingName>Guns</GroupingName>
+        <Ammo><Munition>Stock/120mm AP</Munition><Munition>Stock/120mm HE</Munition></Ammo>
+        <ResourcesProvided/><ResourcesRequired><Resource><Name>Power</Name><Amount>1</Amount><PerUnit>0</PerUnit><OnlyWhenOperating>0</OnlyWhenOperating></Resource></ResourcesRequired>
+      </Component>
+      <Component>
+        <Key>Stock/Test Beam</Key><Name>Test Beam</Name><Category>Weapons - Energy</Category>
+        <Type>0</Type><X>2</X><Y>1</Y><Z>1</Z><Overhang>0</Overhang><Rotate>0</Rotate>
+        <CanTile>0</CanTile><ConsistentCost>0</ConsistentCost><Points>50</Points>
+        <Compounding>0</Compounding><CompoundingClass></CompoundingClass><FirstFree>0</FirstFree>
+        <CompoundingMultiplier>1</CompoundingMultiplier><Crew>4</Crew>
+        <Drive>0</Drive><Powerplant>0</Powerplant><Command>0</Command><CommandAll>0</CommandAll>
+        <Sensor>0</Sensor><BulkMagazine>0</BulkMagazine><Hangar>0</Hangar><Weapon>1</Weapon>
+        <WepType>Energy</WepType><Role>Offensive</Role><NeedsAmmo>0</NeedsAmmo><AmmoSelection>0</AmmoSelection>
+        <AllowGrouping>1</AllowGrouping><GroupingName>Beams</GroupingName>
+        <Ammo/>
+        <ResourcesProvided/><ResourcesRequired><Resource><Name>Power</Name><Amount>3</Amount><PerUnit>0</PerUnit><OnlyWhenOperating>0</OnlyWhenOperating></Resource></ResourcesRequired>
+      </Component>
+      <Component>
+        <Key>Stock/Test PD</Key><Name>Test PD</Name><Category>Weapons - Point Defense</Category>
+        <Type>0</Type><X>1</X><Y>1</Y><Z>1</Z><Overhang>0</Overhang><Rotate>0</Rotate>
+        <CanTile>0</CanTile><ConsistentCost>0</ConsistentCost><Points>15</Points>
+        <Compounding>0</Compounding><CompoundingClass></CompoundingClass><FirstFree>0</FirstFree>
+        <CompoundingMultiplier>1</CompoundingMultiplier><Crew>1</Crew>
+        <Drive>0</Drive><Powerplant>0</Powerplant><Command>0</Command><CommandAll>0</CommandAll>
+        <Sensor>0</Sensor><BulkMagazine>0</BulkMagazine><Hangar>0</Hangar><Weapon>1</Weapon>
+        <WepType>Projectile</WepType><Role>Defensive</Role><NeedsAmmo>1</NeedsAmmo><AmmoSelection>0</AmmoSelection>
+        <AllowGrouping>1</AllowGrouping><GroupingName>PD</GroupingName>
+        <Ammo><Munition>Stock/120mm AP</Munition></Ammo>
+        <ResourcesProvided/><ResourcesRequired><Resource><Name>Power</Name><Amount>1</Amount><PerUnit>0</PerUnit><OnlyWhenOperating>0</OnlyWhenOperating></Resource></ResourcesRequired>
+      </Component>
+      <Component>
+        <Key>Stock/Test Magazine</Key><Name>Test Magazine</Name><Category>Magazine</Category>
+        <Type>1</Type><X>1</X><Y>1</Y><Z>1</Z><Overhang>0</Overhang><Rotate>0</Rotate>
+        <CanTile>0</CanTile><ConsistentCost>0</ConsistentCost><Points>10</Points>
+        <Compounding>0</Compounding><CompoundingClass></CompoundingClass><FirstFree>0</FirstFree>
+        <CompoundingMultiplier>1</CompoundingMultiplier><Crew>0</Crew>
+        <Drive>0</Drive><Powerplant>0</Powerplant><Command>0</Command><CommandAll>0</CommandAll>
+        <Sensor>0</Sensor><BulkMagazine>1</BulkMagazine><Hangar>0</Hangar><Weapon>0</Weapon>
+        <Magazine><Capacity>100</Capacity><Ammo><Munition>Stock/120mm AP</Munition><Munition>Stock/120mm HE</Munition></Ammo></Magazine>
+        <ResourcesProvided/><ResourcesRequired/>
+      </Component>
+      <Component>
+        <Key>Stock/Test Armor</Key><Name>Test Armor</Name><Category>Defenses - Armor</Category>
+        <Type>1</Type><X>2</X><Y>2</Y><Z>2</Z><Overhang>0</Overhang><Rotate>0</Rotate>
+        <CanTile>1</CanTile><ConsistentCost>1</ConsistentCost><Points>20</Points>
+        <Compounding>1</Compounding><CompoundingClass>Armor</CompoundingClass><FirstFree>0</FirstFree>
+        <CompoundingMultiplier>1.5</CompoundingMultiplier><Crew>0</Crew>
+        <Drive>0</Drive><Powerplant>0</Powerplant><Command>0</Command><CommandAll>0</CommandAll>
+        <Sensor>0</Sensor><BulkMagazine>0</BulkMagazine><Hangar>0</Hangar><Weapon>0</Weapon>
+        <ResourcesProvided/><ResourcesRequired/>
+      </Component>
+      <Component>
+        <Key>Stock/Test Missile</Key><Name>Test Missile</Name><Category>Weapons - Missile</Category>
+        <Type>0</Type><X>2</X><Y>1</Y><Z>1</Z><Overhang>0</Overhang><Rotate>0</Rotate>
+        <CanTile>0</CanTile><ConsistentCost>0</ConsistentCost><Points>60</Points>
+        <Compounding>0</Compounding><CompoundingClass></CompoundingClass><FirstFree>0</FirstFree>
+        <CompoundingMultiplier>1</CompoundingMultiplier><Crew>2</Crew>
+        <Drive>0</Drive><Powerplant>0</Powerplant><Command>0</Command><CommandAll>0</CommandAll>
+        <Sensor>0</Sensor><BulkMagazine>0</BulkMagazine><Hangar>0</Hangar><Weapon>1</Weapon>
+        <WepType>Missile</WepType><Role>Offensive</Role><NeedsAmmo>0</NeedsAmmo><AmmoSelection>0</AmmoSelection>
+        <AllowGrouping>1</AllowGrouping><GroupingName>Missiles</GroupingName><Ammo/>
+        <ResourcesProvided/><ResourcesRequired/>
+      </Component>
+      <Component>
+        <Key>Stock/Test Hangar</Key><Name>Test Hangar</Name><Category>Hangar</Category>
+        <Type>1</Type><X>2</X><Y>2</Y><Z>2</Z><Overhang>0</Overhang><Rotate>0</Rotate>
+        <CanTile>0</CanTile><ConsistentCost>0</ConsistentCost><Points>80</Points>
+        <Compounding>0</Compounding><CompoundingClass></CompoundingClass><FirstFree>0</FirstFree>
+        <CompoundingMultiplier>1</CompoundingMultiplier><Crew>12</Crew>
+        <Drive>0</Drive><Powerplant>0</Powerplant><Command>0</Command><CommandAll>0</CommandAll>
+        <Sensor>0</Sensor><BulkMagazine>0</BulkMagazine><Hangar>1</Hangar><Weapon>0</Weapon>
+        <ResourcesProvided/><ResourcesRequired/>
+      </Component>
+      <Component>
+        <Key>Stock/Test Heavy Cannon</Key><Name>Test Heavy Cannon</Name><Category>Weapons - Projectile</Category>
+        <Type>0</Type><X>4</X><Y>1</Y><Z>1</Z><Overhang>0</Overhang><Rotate>0</Rotate>
+        <CanTile>0</CanTile><ConsistentCost>0</ConsistentCost><Points>90</Points>
+        <Compounding>0</Compounding><CompoundingClass></CompoundingClass><FirstFree>0</FirstFree>
+        <CompoundingMultiplier>1</CompoundingMultiplier><Crew>6</Crew>
+        <Drive>0</Drive><Powerplant>0</Powerplant><Command>0</Command><CommandAll>0</CommandAll>
+        <Sensor>0</Sensor><BulkMagazine>0</BulkMagazine><Hangar>0</Hangar><Weapon>1</Weapon>
+        <WepType>Projectile</WepType><Role>Offensive</Role><NeedsAmmo>1</NeedsAmmo><AmmoSelection>1</AmmoSelection>
+        <AllowGrouping>1</AllowGrouping><GroupingName>Heavy Guns</GroupingName>
+        <Ammo><Munition>Stock/120mm AP</Munition></Ammo>
+        <ResourcesProvided/><ResourcesRequired/>
+      </Component>
+    </Components>
+  </Faction>
+</FittingCatalog>

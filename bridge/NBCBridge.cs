@@ -7,7 +7,10 @@ using System.Security.Cryptography;
 using System.Xml;
 using Bundles;
 using Game;
+using Game.Map;
 using Game.Reports;
+using Mirror;
+using Missions;
 using Modding;
 using Networking;
 using Ships;
@@ -28,7 +31,6 @@ namespace NBCBridge
             obj.AddComponent<LifecycleBridge>();
             obj.AddComponent<BattleBridge>();
             obj.AddComponent<RefitBridge>();
-            obj.AddComponent<GenerationBridge>();
             Debug.Log("[NBC] Campaign bridge loaded.");
         }
     }
@@ -122,6 +124,12 @@ namespace NBCBridge
                     return;
                 }
             }
+            if (request == null && File.Exists(Path.Combine(exchange, "list-content.xml")))
+            {
+                DumpContent();
+                File.Delete(Path.Combine(exchange, "list-content.xml"));
+                return;
+            }
             if (request == null)
             {
                 string path = Path.Combine(exchange, "request.xml");
@@ -185,6 +193,7 @@ namespace NBCBridge
                 // Mirror assigns the local host authority over AI slots after spawning.
                 // Assigning sooner is rejected, and OnStartAuthority then restores a default fleet.
                 if (!local.hasAuthority || !bot.hasAuthority) return;
+                ApplyMissionSettings(lobby);
                 local.MovePlayerToTeam(TeamIdentifier.TeamA);
                 local.SetSelectedFleet(playerFleet);
                 bot.MovePlayerToTeam(TeamIdentifier.TeamB);
@@ -277,6 +286,75 @@ namespace NBCBridge
                 Add(node, "AmmoExpended", ship.AmmoPercentageExpended.HasValue ? ship.AmmoPercentageExpended.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) : "");
             }
             AtomicWrite(Path.Combine(output, "result.xml"), doc);
+        }
+
+        private static bool MapMatches(ISkirmishBattlespaceInfo map, string requested)
+        {
+            if (string.Equals(map.DisplayName, requested, StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(map.MapName, requested, StringComparison.OrdinalIgnoreCase)) return true;
+            string wanted = requested;
+            int paren = wanted.IndexOf(" (", StringComparison.Ordinal);
+            if (paren > 0) wanted = wanted.Substring(0, paren);
+            if (string.Equals(map.MapName, wanted, StringComparison.OrdinalIgnoreCase)) return true;
+            string left = map.MapName.StartsWith("The ", StringComparison.OrdinalIgnoreCase) ? map.MapName.Substring(4) : map.MapName;
+            string right = wanted.StartsWith("The ", StringComparison.OrdinalIgnoreCase) ? wanted.Substring(4) : wanted;
+            return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void ApplyMissionSettings(SkirmishLobbyManager lobby)
+        {
+            var settings = lobby.LobbySettings;
+            if (settings == null) throw new InvalidOperationException("The skirmish settings are unavailable");
+            string requestedType = Value("MissionType");
+            if (!string.IsNullOrEmpty(requestedType))
+            {
+                var scenario = BundleManager.Instance.AllScenarios.FirstOrDefault(s =>
+                    string.Equals(s.ScenarioName, requestedType, StringComparison.OrdinalIgnoreCase) ||
+                    s.ScenarioName.IndexOf(requestedType, StringComparison.OrdinalIgnoreCase) >= 0);
+                if (scenario == null) throw new InvalidDataException("No scenario matches mission type: " + requestedType);
+                if (NetworkServer.active)
+                {
+                    settings.SetSelectedScenario(scenario.ScenarioKey);
+                    Debug.Log("[NBC] Mission type set to " + scenario.ScenarioName + " (" + scenario.ScenarioKey + ")");
+                }
+                else
+                {
+                    Debug.LogWarning("[NBC] Local server is not active; keeping the default scenario.");
+                }
+            }
+            string requestedMap = Value("Map");
+            if (!string.IsNullOrEmpty(requestedMap))
+            {
+                var map = settings.AllMaps.FirstOrDefault(m => MapMatches(m, requestedMap));
+                if (map == null) throw new InvalidDataException("No map matches mission map: " + requestedMap);
+                if (!settings.SetSelectedMap(map.MapKey))
+                    throw new InvalidDataException("The game rejected the requested map: " + map.DisplayName);
+                Debug.Log("[NBC] Mission map set to " + map.DisplayName);
+            }
+        }
+
+        private void DumpContent()
+        {
+            var doc = new XmlDocument();
+            var root = doc.CreateElement("Content"); doc.AppendChild(root);
+            var maps = doc.CreateElement("Maps"); root.AppendChild(maps);
+            foreach (var map in BundleManager.Instance.SkirmishMaps.OrderBy(m => m.MapName))
+            {
+                var node = doc.CreateElement("Map"); maps.AppendChild(node);
+                Add(node, "MapName", map.MapName);
+                Add(node, "DisplayName", map.DisplayName);
+                Add(node, "MapKey", map.MapKey);
+                Add(node, "MaxPlayers", map.MaxPlayers);
+            }
+            var scenarios = doc.CreateElement("Scenarios"); root.AppendChild(scenarios);
+            foreach (var scenario in BundleManager.Instance.AllScenarios.OrderBy(s => s.ScenarioName))
+            {
+                var node = doc.CreateElement("Scenario"); scenarios.AppendChild(node);
+                Add(node, "ScenarioName", scenario.ScenarioName);
+                Add(node, "ScenarioKey", scenario.ScenarioKey);
+            }
+            AtomicWrite(Path.Combine(exchange, "content.xml"), doc);
+            Debug.Log("[NBC] Wrote content.xml (" + BundleManager.Instance.SkirmishMaps.Count + " maps, " + BundleManager.Instance.AllScenarios.Count + " scenarios).");
         }
 
         private void Finish()

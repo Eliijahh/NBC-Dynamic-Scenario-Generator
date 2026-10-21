@@ -17,9 +17,10 @@ class RefitTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
         self.c = Campaign(root / "game", root / "data")
-        self.c.player = sample()
-        self.c.player.duplicate(0)
-        self.c.player.duplicate(0)
+        starter = sample()
+        starter.duplicate(0)
+        starter.duplicate(0)
+        self.c.start_new_campaign("Refit Tests", "Cmdr Vale", "Stock/Alliance", 1_000_000, starter)
         self.service = RefitService(self.c)
         catalog = ET.fromstring("<ComponentCatalog><Component><Key>Stock/Radar</Key><Name>Radar</Name><Type>Module</Type></Component></ComponentCatalog>")
         write_xml(self.c.exchange / "catalog.xml", catalog)
@@ -40,18 +41,33 @@ class RefitTests(unittest.TestCase):
         put(marker, "Hash", hashlib.sha256(path.read_bytes()).hexdigest())
         write_xml(folder / f"ready-{revision}.xml", marker)
 
-    def test_buy_sell_and_restart_without_currency(self):
+    def test_buy_sell_and_restart_debit_and_credit_wallet(self):
         self.service.trade("Stock/Radar", 2)
         self.service.trade("Stock/Radar", 1, buy=False)
         restarted = Campaign(self.c.game, self.c.data)
         self.assertEqual(restarted.state["inventory"], {"Stock/Radar": 1})
         self.assertNotIn("credits", restarted.state)
+        self.assertEqual(restarted.credits, 990_500)
+        self.assertEqual(restarted.credit_ledger[-1]["balance"], 990_500)
         with self.assertRaises(ValueError):
             self.service.trade("Stock/Radar", 2, buy=False)
         with self.assertRaises(ValueError):
             self.service.trade("Stock/Unknown", 1)
         with self.assertRaises(ValueError):
             self.service.trade("Stock/Radar", -1)
+
+    def test_trade_rolls_back_if_save_fails(self):
+        before = copy.deepcopy(self.c.state)
+        with patch.object(self.c, "persist", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.service.trade("Stock/Radar", 1)
+        self.assertEqual(self.c.state, before)
+
+    def test_accepted_mission_does_not_lock_economy_or_refit(self):
+        self.c.state["accepted_mission"] = {"id": "mission-1"}
+        self.service.trade("Stock/Radar", 1)
+        self.service.start(launch=False)
+        self.assertIsNotNone(self.service.active)
 
     def test_shared_transfer_and_inventory_conservation(self):
         baseline = self.c.player.clone()
@@ -84,6 +100,28 @@ class RefitTests(unittest.TestCase):
         self.assertIsNone(restarted.state["active_refit"])
         with self.assertRaises(ValueError):
             self.service.confirm()
+
+    def test_selected_hull_refit_merges_only_that_hull(self):
+        self.service.trade("Stock/Radar", 1)
+        key = self.c.player.ships[1].findtext("Key")
+        untouched = ET.tostring(self.c.player.ships[0])
+        self.service.start(launch=False, ship_keys=[key])
+        baseline = Fleet.load(Path(self.service.active["directory"]) / "baseline.fleet")
+        self.assertEqual(len(baseline.ships), 1)
+        draft = baseline.clone()
+        put(draft.ships[0].find("SocketMap/HullSocket"), "ComponentName", "Stock/Radar")
+        self.ready(draft)
+        self.assertTrue(self.service.collect())
+        self.service.confirm()
+
+        self.assertEqual(len(self.c.player.ships), 3)
+        self.assertEqual(self.c.player.ships[1].findtext("SocketMap/HullSocket/ComponentName"), "Stock/Radar")
+        self.assertEqual(ET.tostring(self.c.player.ships[0]), untouched)
+        self.assertIn("Stock/Radar", self.c.state["owned_hulls"][key]["ship"])
+
+        restarted = Campaign(self.c.game, self.c.data)
+        self.assertEqual(len(restarted.player.ships), 3)
+        self.assertEqual(installed(restarted.player)["Stock/Radar"], 1)
 
     def test_trade_battle_and_roster_edit_locked_during_refit(self):
         self.service.start(launch=False)

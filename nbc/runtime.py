@@ -24,7 +24,7 @@ def game_processes(executable):
     """Match the actual executable path, not another installation with the same name."""
     tasklist = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/tasklist.exe"
     result = subprocess.run([str(tasklist), "/FI", "IMAGENAME eq Nebulous.exe", "/FO", "CSV", "/NH"],
-                            capture_output=True, text=True, check=True,
+                            capture_output=True, text=True, errors="replace", check=True,
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
@@ -85,8 +85,8 @@ class GameRuntime:
         if not (self.game / "Mods/NBCBridge/NBCBridge.dll").is_file() or not manifest.exists():
             raise ValueError("Install the updated bridge using Install Bridge.ps1 before starting NEBULOUS.")
         version = read_xml(manifest).findtext("ModVer", "0")
-        if tuple(int(n) for n in version.split(".")) < (0, 3, 0):
-            raise ValueError("Install bridge 0.3 or newer using Install Bridge.ps1, then restart NEBULOUS.")
+        if tuple(int(n) for n in version.split(".")) < (0, 5, 0):
+            raise ValueError("Install bridge 0.5.0 or newer using Install Bridge.ps1, then restart NEBULOUS.")
         self.purpose = purpose
         self.resume_instance = resume_instance
         self.started = self.clock()
@@ -143,7 +143,7 @@ class GameRuntime:
             self.message = heartbeat.findtext("Message") or "Waiting for the current NEBULOUS session to return to its main menu…"
             return False
         if processes:
-            self.message = "NEBULOUS is loading… Waiting for bridge 0.3 to connect."
+            self.message = "NEBULOUS is loading… Waiting for bridge 0.5 to connect."
             return False
         if self.child is not None:
             if self.child.poll() is None or self.clock() - self.spawned < 10:

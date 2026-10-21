@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "sale_percent": 10,
+  "repair_discount_percent": 30,
+  "formula": {
+    "component": {
+      "base": 1000,
+      "points_squared": 100,
+      "minimum": 2000,
+      "round_to": 1000
+    },
+    "hull": {
+      "base": 100000,
+      "per_point": 4000,
+      "minimum": 100000,
+      "round_to": 5000
+    },
+    "fallback": {
+      "component": 5000,
+      "hull": 100000
+    }
+  },
+  "overrides": {
+    "hulls": {},
+    "components": {}
+  }
+}

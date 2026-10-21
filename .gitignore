@@ -2,6 +2,7 @@
 .research/
 data/
 build/
+config.json
 __pycache__/
 *.pyc
 *.log
