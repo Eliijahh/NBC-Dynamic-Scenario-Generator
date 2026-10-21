@@ -53,7 +53,13 @@ if (-not $DryRun) {
 }
 
 if (-not $SkipBuild) {
-    Invoke-Native (Join-Path $PSScriptRoot 'Build Release.ps1') @('-GamePath', $GamePath)
+    # Call the build script with named parameters: array splatting is positional,
+    # so "@('-GamePath', $path)" would pass '-GamePath' as the path value.
+    if ($DryRun) {
+        Write-Output "[dry-run] $(Join-Path $PSScriptRoot 'Build Release.ps1') -GamePath $GamePath"
+    } else {
+        & (Join-Path $PSScriptRoot 'Build Release.ps1') -GamePath $GamePath
+    }
 }
 if (-not $DryRun -and -not (Test-Path -LiteralPath $exe)) {
     throw "Release executable not found at $exe"

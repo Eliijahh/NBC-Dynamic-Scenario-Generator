@@ -17,7 +17,8 @@ function Invoke-Native([string]$Exe, [string[]]$Arguments) {
 }
 
 if (-not $SkipBridge) {
-    Invoke-Native (Join-Path $PSScriptRoot 'Build Bridge.ps1') @('-GamePath', $GamePath)
+    # Named parameters must be passed directly; array splatting is positional.
+    & (Join-Path $PSScriptRoot 'Build Bridge.ps1') -GamePath $GamePath
 }
 if (-not (Test-Path -LiteralPath (Join-Path $bridgeDir 'NBCBridge.dll'))) {
     throw 'The bridge has not been built. Run Build Bridge.ps1 first.'
