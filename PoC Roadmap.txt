@@ -180,20 +180,23 @@ price and the point value one next to another
 4. DAMAGE, REPAIR AND PERMANENT LOSS
 ------------------------------------
 4.1 Battle-report state
-[x] Native report captures ship condition, casualties and damage statistics.
-[ ] Persist per-ship condition into the campaign roster.
-[ ] Mark a ship as ready, damaged or lost.
-[ ] Keep unselected ships completely unaffected by a mission report.
+[x] Native report captures ship condition, casualties and damage statistics
+[x] Persist per-ship condition into the campaign roster
+[x] Mark a ship as ready or damaged
+[x] A completely destroyed ship happens when the reactor completely explodes in the battle
+[x] A completely destroyed ship should be removed from the fleet list
+[x] Keep unselected ships completely unaffected by a mission report
+[x] Component that have their HP be equal to 0 should be flagged as destroyed, and must be removed and scrapped and cannot be repaired
 
 4.2 Repair
-[ ] Any condition damage above zero blocks mission deployment.
-[ ] Repair action for an individual ship.
-[ ] Repair all action.
-[ ] Repair screen or repair panel.
-[ ] Show current condition and repair cost.
-[ ] Define the repair cost formula.
-[ ] Decide whether repair is instant or takes time.
-[ ] Decide whether repair consumes credits, components, or both.
+[ ] Any condition damage above zero blocks mission deployment
+[ ] Repair action for an individual ship
+[ ] Repair all action
+[ ] Repair screen or repair panel
+[ ] Show current condition and repair cost
+[ ] Repairing a damaged component should cost less than buying a new one, so the repair cost formula should account for that
+[ ] Repair is instant for PoC
+[ ] Repair consumes credits, a percentage of total component cost based on the percentage of damage of that component
 [ ] Revalidate that the ship is ready before confirming deployment.
 [ ] Show damaged ships as unavailable on the deployment screen.
 
@@ -202,7 +205,6 @@ price and the point value one next to another
 [ ] Installed components on a destroyed ship are removed from owned inventory.
 [ ] Reconcile the roster and inventory in the same atomic save as the battle result.
 [ ] Show destroyed ships and lost components in the debrief.
-[ ] Warn before launch that destruction and component loss are permanent.
 [ ] Ensure a lost ship cannot appear in a later mission.
 
 4.4 Scope limits

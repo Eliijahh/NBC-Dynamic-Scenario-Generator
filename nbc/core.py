@@ -63,6 +63,18 @@ def put(root, tag, value):
     node.text = str(value)
 
 
+def battle_condition(value, label="ship condition"):
+    """Read a native report fraction and keep it inside the valid range."""
+    text = (value or "").strip()
+    if not text:
+        return 1.0
+    try:
+        number = float(text)
+    except ValueError as exc:
+        raise ValueError(f"Battle report contains an invalid {label}.") from exc
+    return max(0.0, min(1.0, number))
+
+
 class Fleet:
     def __init__(self, root, source=None):
         if root.tag != "Fleet" or root.find("Ships") is None:
@@ -942,6 +954,47 @@ class Campaign:
         except (OSError, ET.ParseError):
             return "Bridge not connected. Enable NBC Campaign Bridge in the game's Mods menu."
 
+    @staticmethod
+    def _report_parts(report, names):
+        """Map local-player part damage by ship name and archived socket key."""
+        if report is None:
+            return {}
+        names = {name for name in names if name}
+        parts = {}
+        for player in report.findall(".//AARPlayerReportOfShipBattleReportCraftBattleReport"):
+            if (player.findtext("IsLocalPlayer") or "").strip().casefold() != "true":
+                continue
+            for ship in player.findall("Ships/ShipBattleReport"):
+                name = (ship.findtext("ShipName") or "").strip()
+                if name not in names:
+                    continue
+                status = parts.setdefault(name, {})
+                for part in ship.findall("PartStatus/PartDamage"):
+                    key = (part.findtext("Key") or "").strip()
+                    if not key:
+                        continue
+                    health = battle_condition(part.findtext("HealthPercent"), "component condition")
+                    destroyed = (
+                        (part.findtext("IsDestroyed") or "").strip().casefold() in {"true", "1"}
+                        or health <= 0
+                    )
+                    status[key] = {"health": health, "destroyed": destroyed}
+        return parts
+
+    def _powerplant_keys(self):
+        """Return catalogue component keys that count as reactors."""
+        path = self.exchange / "fitting-catalog.xml"
+        if not path.exists():
+            return set()
+        from .fitting import Catalog
+        catalog = Catalog.load(path)
+        return {
+            component.key
+            for faction in catalog.factions.values()
+            for component in faction.components.values()
+            if component.is_powerplant
+        }
+
     def collect(self):
         active = self.state.get("active_battle")
         if not active:
@@ -954,6 +1007,12 @@ class Campaign:
             raise ValueError("Battle result identity mismatch.")
         if any(b["id"] == active["id"] for b in self.state["battles"]):
             raise ValueError("This battle was already imported.")
+        report_path = Path(active["directory"]) / "report.xml"
+        report = None
+        if report_path.exists():
+            report = read_xml(report_path)
+            if report.tag != "FullAfterActionReport":
+                raise ValueError("Battle report file is not a full after-action report.")
         record = dict(active, status="completed", outcome=result.findtext("Outcome"), duration=result.findtext("Duration"), completed=now(), ships=[])
         roster = Fleet.load(Path(active["directory"]) / "player.fleet")
         valid_keys = {s.findtext("Key") for s in roster.ships}
@@ -965,11 +1024,76 @@ class Campaign:
                 if item.get("Key") not in valid_keys or item["Key"] in updates:
                     raise ValueError("Battle report contains an unknown or duplicate player ship identity.")
                 updates[item["Key"]] = item
-        with self.transaction():
+
+        report_parts = self._report_parts(report, {item.get("Name", "") for item in updates.values()})
+        powerplants = self._powerplant_keys()
+        ship_state = copy.deepcopy(self.state.get("ship_state") or {})
+        player = self.player.clone() if self.player else None
+        lost = set()
+        for key, item in updates.items():
+            archived = next((s for s in roster.ships if s.findtext("Key") == key), None)
+            sockets = {}
+            if archived is not None:
+                for node in archived.findall("SocketMap/HullSocket"):
+                    socket_key = (node.findtext("Key") or "").strip()
+                    if socket_key:
+                        sockets[socket_key] = (node.findtext("ComponentName") or "").strip()
+            parts = report_parts.get((item.get("Name") or "").strip(), {})
+            condition = battle_condition(item.get("Condition"))
+            destroyed_sockets = {
+                socket_key: component
+                for socket_key, component in sockets.items()
+                if parts.get(socket_key, {}).get("destroyed")
+            }
+            reactors = {socket_key for socket_key, component in sockets.items() if component in powerplants}
+            reactor_lost = bool(reactors) and all(
+                parts.get(socket_key, {}).get("destroyed") for socket_key in reactors
+            )
+            eliminated = (item.get("Status") or "").strip().casefold() in {"destroyed", "true", "1", "eliminated"}
+            if eliminated or reactor_lost:
+                lost.add(key)
+                ship_state.pop(key, None)
+                continue
+            damaged = (
+                condition < 1.0
+                or bool(destroyed_sockets)
+                or any(part["health"] < 1.0 for part in parts.values())
+            )
+            state_item = copy.deepcopy(ship_state.get(key, {}))
+            state_item["condition"] = condition
+            state_item["status"] = "damaged" if damaged else "ready"
+            if destroyed_sockets:
+                state_item["destroyed_components"] = (state_item.get("destroyed_components") or []) + [
+                    {"socket": socket_key, "component": component}
+                    for socket_key, component in sorted(destroyed_sockets.items())
+                ]
+            ship_state[key] = state_item
+            if player is not None:
+                ship = next((s for s in player.ships if s.findtext("Key") == key), None)
+                socket_map = ship.find("SocketMap") if ship is not None else None
+                if socket_map is not None:
+                    for socket in list(socket_map.findall("HullSocket")):
+                        if (socket.findtext("Key") or "").strip() in destroyed_sockets:
+                            socket_map.remove(socket)
+        if player is not None:
+            container = player.root.find("Ships")
+            for ship in list(container.findall("Ship")):
+                if (ship.findtext("Key") or "").strip() in lost:
+                    container.remove(ship)
+            player.validate(max_ships=None, allow_empty=True)
+
+        before, previous_player = copy.deepcopy(self.state), self.player
+        self.player = player
+        try:
             self.state["ship_results"].update(updates)
             self.state["battles"].append(record)
             self.state["active_battle"] = None
+            self.state["ship_state"] = ship_state
             self.queue_ack(result, "battle")
+            self.save_fleets()
+        except Exception:
+            self.state, self.player = before, previous_player
+            raise
         self.flush_ack()
         return record
 

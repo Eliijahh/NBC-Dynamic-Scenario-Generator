@@ -1,6 +1,7 @@
 import copy
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -26,6 +27,30 @@ def empty_hull(name, number, hull="Stock/Raines Frigate"):
         f"<Ship><Key>{uuid.uuid4()}</Key><Name>{name}</Name><Cost>100</Cost>"
         f"<Number>{number}</Number><HullType>{hull}</HullType><SocketMap /></Ship>"
     )
+
+
+def fitted_ship(name, number, *parts, hull="Stock/Raines Frigate"):
+    ship = empty_hull(name, number, hull)
+    socket_map = ship.find("SocketMap")
+    for key, component in parts:
+        socket = ET.SubElement(socket_map, "HullSocket")
+        ET.SubElement(socket, "Key").text = key
+        ET.SubElement(socket, "ComponentName").text = component
+    return ship
+
+
+def fleet_of(*ships, name="Battle Fleet", faction="Stock/Alliance"):
+    fleet = sample(name, faction)
+    container = fleet.root.find("Ships")
+    for child in list(container):
+        container.remove(child)
+    for ship in ships:
+        container.append(ship)
+    return fleet
+
+
+def ship_by_key(fleet, key):
+    return next(ship for ship in fleet.ships if ship.findtext("Key") == key)
 
 
 class FleetTests(unittest.TestCase):
@@ -438,6 +463,50 @@ class ExchangeTests(unittest.TestCase):
             put(ship, key, value)
         write_xml(Path(battle["directory"]) / "result.xml", root)
 
+    def write_result(self, battle, ships):
+        root = ET.Element("BattleResult")
+        put(root, "Id", battle["id"])
+        put(root, "Outcome", "Victory")
+        put(root, "Duration", 600)
+        container = ET.SubElement(root, "Ships")
+        for key, name, status, condition in ships:
+            node = ET.SubElement(container, "Ship")
+            for tag, value in {
+                "Key": key,
+                "Side": "Player",
+                "Name": name,
+                "Status": status,
+                "Condition": condition,
+            }.items():
+                put(node, tag, value)
+        write_xml(Path(battle["directory"]) / "result.xml", root)
+
+    def write_report(self, battle, ships):
+        root = ET.Element("FullAfterActionReport")
+        teams = ET.SubElement(root, "Teams")
+        team = ET.SubElement(teams, "TeamReportOfShipBattleReportCraftBattleReport")
+        players = ET.SubElement(team, "Players")
+        player = ET.SubElement(players, "AARPlayerReportOfShipBattleReportCraftBattleReport")
+        put(player, "IsLocalPlayer", "true")
+        container = ET.SubElement(player, "Ships")
+        for name, parts in ships.items():
+            ship = ET.SubElement(container, "ShipBattleReport")
+            put(ship, "ShipName", name)
+            part_status = ET.SubElement(ship, "PartStatus")
+            for key, health, destroyed in parts:
+                part = ET.SubElement(part_status, "PartDamage")
+                put(part, "Key", key)
+                put(part, "HealthPercent", health)
+                put(part, "IsDestroyed", "true" if destroyed else "false")
+        write_xml(Path(battle["directory"]) / "report.xml", root)
+
+    def install_catalog(self):
+        self.campaign.exchange.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(
+            Path(__file__).parent / "fixtures" / "fitting-catalog.xml",
+            self.campaign.exchange / "fitting-catalog.xml",
+        )
+
     def test_prepare_exports_native_fleets_and_locks_pending_battle(self):
         battle = self.campaign.prepare()
         self.assertTrue((self.campaign.exchange / "request.xml").exists())
@@ -474,6 +543,184 @@ class ExchangeTests(unittest.TestCase):
             self.campaign.collect()
         self.assertEqual(self.campaign.state["ship_results"], {})
         self.assertEqual(self.campaign.state["battles"], [])
+
+    def test_condition_damage_and_unselected_ships_persist(self):
+        resolute = fitted_ship(
+            "Resolute", 42, ("weapon", "Stock/Test Cannon"), ("reactor", "Stock/Test Reactor")
+        )
+        sentinel = fitted_ship("Sentinel", 43, ("reactor", "Stock/Test Reactor"))
+        self.campaign.player = fleet_of(resolute, sentinel)
+        battle = self.campaign.prepare()
+        self.install_catalog()
+        resolute_key, sentinel_key = resolute.findtext("Key"), sentinel.findtext("Key")
+        sentinel_xml = ET.tostring(sentinel)
+        self.write_result(battle, [(resolute_key, "Resolute", "False", "0.72")])
+        self.write_report(
+            battle,
+            {
+                "Resolute": [
+                    ("weapon", 0.4, False),
+                    ("reactor", 1.0, False),
+                    ("hull-structure", 0.6, False),
+                ],
+                "Sentinel": [("reactor", 0.0, True)],
+            },
+        )
+
+        self.campaign.collect()
+
+        states = self.campaign.state["ship_state"]
+        self.assertEqual(states[resolute_key], {"condition": 0.72, "status": "damaged"})
+        self.assertEqual(states[sentinel_key], {"condition": 1.0, "status": "ready"})
+        self.assertEqual(ET.tostring(ship_by_key(self.campaign.player, sentinel_key)), sentinel_xml)
+        self.assertIsNotNone(
+            ship_by_key(self.campaign.player, resolute_key).find("SocketMap/HullSocket[Key='weapon']")
+        )
+        restarted = Campaign(self.campaign.game, self.campaign.data)
+        self.assertEqual(restarted.state["ship_state"][resolute_key]["condition"], 0.72)
+        self.assertEqual(restarted.state["ship_state"][resolute_key]["status"], "damaged")
+
+    def test_retired_survivors_and_eliminated_ships_are_separated(self):
+        survivor = fitted_ship(
+            "Survivor", 1, ("weapon", "Stock/Test Cannon"), ("reactor", "Stock/Test Reactor")
+        )
+        reactor_lost = fitted_ship("Reactor Lost", 2, ("reactor", "Stock/Test Reactor"))
+        destroyed = fitted_ship("Destroyed", 3, ("reactor", "Stock/Test Reactor"))
+        self.campaign.player = fleet_of(survivor, reactor_lost, destroyed)
+        battle = self.campaign.prepare()
+        self.install_catalog()
+        survivor_key = survivor.findtext("Key")
+        reactor_key = reactor_lost.findtext("Key")
+        destroyed_key = destroyed.findtext("Key")
+        enemy_xml = ET.tostring(self.campaign.enemy.root)
+        self.write_result(
+            battle,
+            [
+                (survivor_key, "Survivor", "Retired", "1"),
+                (reactor_key, "Reactor Lost", "Retired", "1"),
+                (destroyed_key, "Destroyed", "True", "1"),
+            ],
+        )
+        self.write_report(
+            battle,
+            {
+                "Survivor": [("weapon", 0.5, False), ("reactor", 1.0, False)],
+                "Reactor Lost": [("reactor", 0.0, True)],
+                "Destroyed": [("reactor", 1.0, False)],
+            },
+        )
+
+        self.campaign.collect()
+
+        keys = {ship.findtext("Key") for ship in self.campaign.player.ships}
+        self.assertEqual(keys, {survivor_key})
+        self.assertEqual(set(self.campaign.state["owned_hulls"]), {survivor_key})
+        self.assertEqual(set(self.campaign.state["ship_state"]), {survivor_key})
+        self.assertEqual(
+            self.campaign.state["ship_state"][survivor_key],
+            {"condition": 1.0, "status": "damaged"},
+        )
+        self.assertEqual(ET.tostring(self.campaign.enemy.root), enemy_xml)
+        restarted = Campaign(self.campaign.game, self.campaign.data)
+        self.assertEqual({ship.findtext("Key") for ship in restarted.player.ships}, {survivor_key})
+
+    def test_zero_hp_component_is_removed_and_scrapped(self):
+        ship = fitted_ship(
+            "Resolute", 42, ("weapon", "Stock/Test Cannon"), ("reactor", "Stock/Test Reactor")
+        )
+        self.campaign.player = fleet_of(ship)
+        battle = self.campaign.prepare()
+        self.install_catalog()
+        key = ship.findtext("Key")
+        self.write_result(battle, [(key, "Resolute", "False", "1")])
+        self.write_report(
+            battle,
+            {
+                "Resolute": [
+                    ("weapon", 0.0, False),
+                    ("reactor", 1.0, False),
+                    ("hull-structure", 0.0, True),
+                ]
+            },
+        )
+
+        self.campaign.collect()
+
+        current = ship_by_key(self.campaign.player, key)
+        self.assertIsNone(current.find("SocketMap/HullSocket[Key='weapon']"))
+        self.assertIsNotNone(current.find("SocketMap/HullSocket[Key='reactor']"))
+        self.assertEqual(self.campaign.state["inventory"], {})
+        self.assertEqual(
+            self.campaign.state["ship_state"][key],
+            {
+                "condition": 1.0,
+                "status": "damaged",
+                "destroyed_components": [{"socket": "weapon", "component": "Stock/Test Cannon"}],
+            },
+        )
+        owned = ET.fromstring(self.campaign.state["owned_hulls"][key]["ship"])
+        self.assertIsNone(owned.find("SocketMap/HullSocket[Key='weapon']"))
+        restarted = Campaign(self.campaign.game, self.campaign.data)
+        self.assertNotIn("Stock/Test Cannon", restarted.state["inventory"])
+        self.assertEqual(
+            restarted.state["ship_state"][key]["destroyed_components"],
+            [{"socket": "weapon", "component": "Stock/Test Cannon"}],
+        )
+
+    def test_undamaged_ship_is_ready(self):
+        ship = fitted_ship(
+            "Resolute", 42, ("weapon", "Stock/Test Cannon"), ("reactor", "Stock/Test Reactor")
+        )
+        self.campaign.player = fleet_of(ship)
+        battle = self.campaign.prepare()
+        self.install_catalog()
+        key = ship.findtext("Key")
+        self.write_result(battle, [(key, "Resolute", "Retired", "1")])
+        self.write_report(
+            battle,
+            {"Resolute": [("weapon", 1.0, False), ("reactor", 1.0, False)]},
+        )
+        self.campaign.collect()
+        self.assertEqual(
+            self.campaign.state["ship_state"][key],
+            {"condition": 1.0, "status": "ready"},
+        )
+
+    def test_missing_report_uses_result_condition(self):
+        battle = self.campaign.prepare()
+        key = self.campaign.player.ships[0].findtext("Key")
+        self.write_result(battle, [(key, "Resolute", "Retired", "0.4")])
+        self.campaign.collect()
+        self.assertEqual(
+            self.campaign.state["ship_state"][key],
+            {"condition": 0.4, "status": "damaged"},
+        )
+
+    def test_invalid_condition_rejected_without_import(self):
+        battle = self.campaign.prepare()
+        key = self.campaign.player.ships[0].findtext("Key")
+        self.write_result(battle, [(key, "Resolute", "False", "not-a-number")])
+        with self.assertRaisesRegex(ValueError, "invalid ship condition"):
+            self.campaign.collect()
+        self.assertEqual(self.campaign.state["battles"], [])
+        self.assertEqual(self.campaign.state["ship_results"], {})
+        self.assertIsNotNone(self.campaign.state["active_battle"])
+
+    def test_import_rollback_restores_roster_and_state(self):
+        self.campaign.player = fleet_of(
+            fitted_ship("Resolute", 42, ("reactor", "Stock/Test Reactor"))
+        )
+        battle = self.campaign.prepare()
+        key = self.campaign.player.ships[0].findtext("Key")
+        self.write_result(battle, [(key, "Resolute", "True", "1")])
+        before_state = copy.deepcopy(self.campaign.state)
+        before_player = ET.tostring(self.campaign.player.root)
+        with patch.object(Campaign, "persist", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.campaign.collect()
+        self.assertEqual(self.campaign.state, before_state)
+        self.assertEqual(ET.tostring(self.campaign.player.root), before_player)
+        self.assertEqual(self.campaign.state["active_battle"], battle)
 
     def test_cancel_is_explicit_and_does_not_import(self):
         battle = self.campaign.prepare()
