@@ -125,14 +125,11 @@ CURRENT BASELINE ALREADY IN THE PROJECT
 [ ] Price every component in the catalogue.
 [ ] Fallback price for catalogue items added by a game update.
 [ ] Validate that no hull or component is missing a price.
-[ ] Starting credits value.
-[ ] Mission reward values.
-[ ] Repair costs.
-[ ] Purchase costs.
-[ ] Decide whether ammunition costs credits.
-[ ] Decide whether selling/scrapping returns credits.
-[ ] Balance pass against mission rewards and losses.
-[ ] Optional price-debug view showing native points and credits side by side.
+[ ] Purchases decrease player's money.
+[ ] Ammunition does not cost credits for PoC
+[ ] Selling returns 10% of hull or component value
+[ ] Optional price-debug view showing native points and credits side by side added in debug view when the player uses SHIFT-X while in the settings screen, debug section appears and one of the buttons opens a screen showing two tabs "Hulls" and "Components" which then show the 
+price and the point value one next to another
 
 
 3. HULL AND COMPONENT OWNERSHIP
@@ -460,6 +457,8 @@ and is distinct from the deferred/out-of-scope list above.
 [ ] Offer New Campaign / Load Campaign from that state.
 [ ] Add automated campaign-over detection coverage.
 [ ] Live-check a dead campaign and the campaign-over screen.
+[ ] Missile generation
+[ ] Ammunition costs
 
 
 SUGGESTED BUILD ORDER
