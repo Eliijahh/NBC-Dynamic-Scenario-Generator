@@ -237,9 +237,9 @@ class App(tk.Tk):
         self.tabs = ttk.Notebook(shell)
         self.tabs.pack(fill="both", expand=True)
         self.fleet_tab = ttk.Frame(self.tabs, padding=(0, 12))
-        self.battle_tab = ttk.Frame(self.tabs, padding=(0, 12))
+        self.missions_tab = ttk.Frame(self.tabs, padding=(0, 12))
         self.result_tab = ttk.Frame(self.tabs, padding=(0, 12))
-        for frame, title in [(self.fleet_tab, "01  Fleet"), (self.battle_tab, "04  Battle"), (self.result_tab, "05  Debrief")]:
+        for frame, title in [(self.fleet_tab, "01  Fleet"), (self.missions_tab, "03  Missions"), (self.result_tab, "04  Debrief")]:
             self.tabs.add(frame, text=title)
         bar = ttk.Frame(self.fleet_tab)
         bar.pack(fill="x")
@@ -273,12 +273,6 @@ class App(tk.Tk):
         ttk.Entry(row, textvariable=self.name).pack(side="left", fill="x", expand=True, padx=(0, 8))
         ttk.Entry(row, textvariable=self.number, width=7).pack(side="left")
         ttk.Button(right, text="Save ship details", command=self.save_ship).pack(anchor="w", pady=8)
-        ttk.Label(right, text="Refit equipment in the native game editor.", style="Muted.TLabel").pack(anchor="w", pady=(8, 4))
-        self.loadouts = ttk.Combobox(right, state="readonly", width=45)
-        self.refit_selected_button = ttk.Button(right, text="Refit selected hull → NEBULOUS", command=self.start_selected_refit)
-        self.refit_selected_button.pack(anchor="w", pady=8)
-        ttk.Button(right, text="Refit whole fleet → NEBULOUS", command=self.start_refit).pack(anchor="w", pady=(0, 8))
-        ttk.Label(right, text="Buy spare equipment in Inventory before opening a refit. Whole-fleet refit is limited to ten hulls; individual hulls can always be refitted.", style="Muted.TLabel", wraplength=440).pack(anchor="w")
         self.equipment = self.tree(right, ("component", "contents"), ("INSTALLED EQUIPMENT", "STATUS / LOAD"), (250, 170), height=4)
         self.equipment.bind("<<TreeviewSelect>>", self.refresh_repair)
         ttk.Label(right, text="REPAIR", foreground=ACCENT).pack(anchor="w", pady=(14, 4))
@@ -292,32 +286,11 @@ class App(tk.Tk):
         self.repair_all_button.pack(side="left", padx=(0, 8))
         self.scrap_component_button = ttk.Button(repair_buttons, text="Scrap component", command=self.scrap_component)
         self.scrap_component_button.pack(side="left")
-        self.build_refit_tabs()
+        self.build_inventory_tab()
         self.build_settings_screen()
 
-        ttk.Label(self.battle_tab, text="Prepare an engagement", style="Sub.TLabel").pack(anchor="w")
-        ttk.Label(self.battle_tab, text="Build randomly fitted ships near your target budget. Ships are fitted offline from the native catalogue exported by NEBULOUS.", style="Muted.TLabel").pack(anchor="w", pady=8)
-        controls = ttk.Frame(self.battle_tab)
-        controls.pack(fill="x", pady=12)
-        self.faction = ttk.Combobox(controls, state="readonly", values=["Stock/Protectorate", "Stock/Alliance"], width=23)
-        self.faction.current(0)
-        self.faction.pack(side="left", padx=(0, 10))
-        self.budget = tk.StringVar(value="700")
-        ttk.Entry(controls, textvariable=self.budget, width=9).pack(side="left", padx=(0, 8))
-        ttk.Label(controls, text="target points", style="Muted.TLabel").pack(side="left", padx=(0, 14))
-        self.generate_button = ttk.Button(controls, text="Generate enemy", command=self.generate)
-        self.generate_button.pack(side="left")
-        self.enemy_info = ttk.Label(self.battle_tab, text="Generate an enemy to continue.", foreground=ACCENT)
-        self.enemy_info.pack(anchor="w", pady=8)
-        self.enemies = self.tree(self.battle_tab, ("name", "hull", "points"), ("ENEMY SHIP", "HULL", "POINTS"), (260, 400, 100), height=6)
-        launchbar = ttk.Frame(self.battle_tab)
-        launchbar.pack(fill="x", pady=18)
-        self.run_button = ttk.Button(launchbar, text="Run battle  →  NEBULOUS", style="Accent.TButton", command=self.launch)
-        self.run_button.pack(side="left")
-        ttk.Button(launchbar, text="Cancel pending request", command=self.cancel).pack(side="left", padx=12)
-        self.deployment_info = ttk.Label(self.battle_tab, text="", foreground=ACCENT)
-        self.deployment_info.pack(anchor="w", pady=(0, 8))
-        ttk.Label(self.battle_tab, text="First run: install the bridge, launch NEBULOUS once with “NBC Campaign Bridge” enabled, then return here.\nThe bridge exports the fitting catalogue and creates local skirmishes. You choose deployment and play.\nResults appear here automatically when the battle ends. Damaged ships must be repaired on the Fleet tab before deployment.", style="Muted.TLabel", wraplength=1050).pack(anchor="w")
+        ttk.Label(self.missions_tab, text="Missions", style="Sub.TLabel").pack(anchor="w")
+        ttk.Label(self.missions_tab, text="Mission generation and deployment will be rebuilt here.", style="Muted.TLabel", wraplength=1050).pack(anchor="w", pady=8)
 
         ttk.Label(self.result_tab, text="Battle history", style="Sub.TLabel").pack(anchor="w", pady=(0, 12))
         self.history = self.tree(self.result_tab, ("time", "outcome", "duration", "id"), ("ENGAGEMENT", "OUTCOME", "SECONDS", "BATTLE ID"), (230, 140, 100, 330), height=5)
@@ -436,13 +409,17 @@ class App(tk.Tk):
     def resume_pending_campaign(self):
         pending = self.campaign.pending_action()
         if pending == "refit":
-            self.tabs.select(self.refit_tab)
-            self.status.set("Resumed pending refit. Confirm, continue or cancel it.")
+            # The refit workspace was removed ahead of the mission redesign, so a
+            # refit left over from an older build is discarded rather than blocking.
+            self.refits.cancel()
+            self.refresh()
+            self.tabs.select(self.fleet_tab)
+            self.status.set("Discarded a pending refit left by the previous build.")
         elif pending == "battle":
-            self.tabs.select(self.battle_tab)
+            self.tabs.select(self.missions_tab)
             self.status.set("Resumed pending battle. Waiting for NEBULOUS.")
         elif pending == "mission":
-            self.tabs.select(self.battle_tab)
+            self.tabs.select(self.missions_tab)
             self.status.set("Accepted mission restored from the save.")
         else:
             self.tabs.select(self.fleet_tab)
@@ -573,11 +550,9 @@ class App(tk.Tk):
     def exit_without_saving(self):
         self._shutdown(save=False)
 
-    def build_refit_tabs(self):
+    def build_inventory_tab(self):
         self.inventory_tab = ttk.Frame(self.tabs, padding=(0, 12))
-        self.refit_tab = ttk.Frame(self.tabs, padding=(0, 12))
         self.tabs.insert(1, self.inventory_tab, text="02  Inventory")
-        self.tabs.insert(2, self.refit_tab, text="03  Refit")
         ttk.Label(self.inventory_tab, text="Equipment store & spare inventory", style="Sub.TLabel").pack(anchor="w")
         ttk.Label(self.inventory_tab, text="Unlimited store stock • Purchases debit credits; selling spare equipment returns 10%. Ammunition is free for the PoC.", style="Muted.TLabel", wraplength=1100).pack(anchor="w", pady=8)
         controls = ttk.Frame(self.inventory_tab)
@@ -611,25 +586,6 @@ class App(tk.Tk):
         self._enable_sorting(self.stock, self.refresh_inventory, ("points", "spares", "installed", "price", "sale"))
         self.catalog_rows = []
         self.catalog_signature = None
-
-        ttk.Label(self.refit_tab, text="Native fleet refit", style="Sub.TLabel").pack(anchor="w")
-        ttk.Label(self.refit_tab, text="Edit all ships together in NEBULOUS. Removed components become available to the rest of your fleet immediately.\nNo refit costs or facility requirements. Campaign ships and inventory change only after confirmation here.", style="Muted.TLabel", wraplength=1100).pack(anchor="w", pady=8)
-        bar = ttk.Frame(self.refit_tab)
-        bar.pack(fill="x", pady=12)
-        self.refit_start_button = ttk.Button(bar, text="Refit fleet → NEBULOUS", command=self.start_refit, style="Accent.TButton")
-        self.refit_start_button.pack(side="left", padx=(0, 8))
-        self.refit_resume_button = ttk.Button(bar, text="Continue / resume editor", command=self.resume_refit)
-        self.refit_resume_button.pack(side="left", padx=8)
-        self.refit_confirm_button = ttk.Button(bar, text="Confirm refit", command=self.confirm_refit, style="Accent.TButton")
-        self.refit_confirm_button.pack(side="left", padx=8)
-        self.refit_cancel_button = ttk.Button(bar, text="Cancel refit", command=self.cancel_refit)
-        self.refit_cancel_button.pack(side="left", padx=8)
-        self.refit_message = tk.StringVar(value="Ready to refit. Buy spare equipment in Inventory first, or transfer installed parts between ships.")
-        ttk.Label(self.refit_tab, textvariable=self.refit_message, foreground=ACCENT, wraplength=1100).pack(anchor="w", pady=10)
-        ttk.Label(self.refit_tab, text="Proposed changes", style="Sub.TLabel").pack(anchor="w", pady=8)
-        self.refit_changes = self.tree(self.refit_tab, ("ship", "socket", "old", "new"), ("SHIP", "SOCKET", "REMOVE", "INSTALL"), (180, 150, 360, 360), height=6)
-        self.refit_inventory_text = tk.StringVar()
-        ttk.Label(self.refit_tab, textvariable=self.refit_inventory_text, style="Muted.TLabel", wraplength=1100).pack(anchor="w", pady=8)
 
     def refresh_inventory(self):
         if not hasattr(self, "stock"):
@@ -766,63 +722,6 @@ class App(tk.Tk):
                 f"for {format_credits(amount)}. Balance {format_credits(self.campaign.credits)}."
             )
         self.guarded(action)
-
-    def refresh_refit(self):
-        active = self.refits.active
-        busy = bool(self.campaign.pending_action())
-        roster = self.campaign.player
-        whole_ready = bool(roster and 1 <= len(roster.ships) <= 10)
-        selected_ready = bool(roster and self.selected is not None and 0 <= self.selected < len(roster.ships))
-        self.refit_start_button.configure(state="disabled" if busy or not whole_ready else "normal")
-        self.refit_selected_button.configure(state="disabled" if busy or not selected_ready else "normal")
-        self.refit_resume_button.configure(state="normal" if active else "disabled")
-        self.refit_cancel_button.configure(state="normal" if active else "disabled")
-        self.refit_confirm_button.configure(state="normal" if active and active["stage"] == "review" else "disabled")
-        self.refit_changes.delete(*self.refit_changes.get_children())
-        self.refit_inventory_text.set("")
-        if active and active["stage"] == "review":
-            try:
-                _, inventory, changes = self.refits.review()
-                for row in changes:
-                    self.refit_changes.insert("", "end", values=tuple(x.replace("Stock/", "") for x in row))
-                self.refit_message.set(f"Draft ready: {len(changes)} equipment/identity changes. Confirm to apply, continue editing, or cancel.")
-                self.refit_inventory_text.set(f"Spare inventory after confirmation: {sum(inventory.values())} components. Ammunition and missile/craft construction are outside inventory tracking in this prototype.")
-            except Exception as exc:
-                self.refit_message.set(f"Draft rejected: {exc}")
-                self.refit_confirm_button.configure(state="disabled")
-        elif active:
-            self.refit_message.set(self.refits.status())
-        else:
-            self.refit_message.set("Ready. Your approved fleet and spare inventory are saved. Buy equipment or open a refit.")
-
-    def start_refit(self):
-        def action():
-            self.refits.start()
-            self.refresh()
-            self.tabs.select(self.refit_tab)
-            self.status.set("Starting NEBULOUS and opening your fleet editor…")
-        self.guarded(action)
-
-    def resume_refit(self):
-        def action():
-            if self.refits.active and self.refits.active["stage"] != "review" and not messagebox.askyesno("Resume editor", "Reopen the last exported draft/input? Unsaved changes in the current game editor will be discarded.", parent=self):
-                return
-            self.refits.resume()
-            self.refresh()
-            self.status.set("Refit resumed. An interrupted editor restarts from the last exported draft/input.")
-        self.guarded(action)
-
-    def confirm_refit(self):
-        def action():
-            self.refits.confirm()
-            self.refresh()
-            self.status.set("Refit confirmed. Fleet and spare inventory saved together.")
-        self.guarded(action)
-
-    def cancel_refit(self):
-        if self.refits.active and messagebox.askyesno("Cancel refit", "Discard this refit? Your approved fleet and spare inventory will be preserved.", parent=self):
-            self.guarded(self.refits.cancel)
-            self.refresh()
 
     def new_campaign(self):
         NewCampaignDialog(self)
@@ -1003,34 +902,11 @@ class App(tk.Tk):
             self.number.set("")
             self.equipment.delete(*self.equipment.get_children())
             self.fleet_info.configure(text="No hulls owned. Use Buy hull to purchase a hull from the native catalogue.")
-        self.enemies.delete(*self.enemies.get_children())
-        if self.campaign.enemy:
-            e = self.campaign.enemy
-            self.enemy_info.configure(text=f"{len(e.ships)} hostile ships  /  {e.points:,} points  /  {e.faction.replace('Stock/', '')}")
-            for s in e.ships:
-                self.enemies.insert("", "end", values=(s.findtext("Name"), s.findtext("HullType", "").replace("Stock/", ""), s.findtext("Cost")))
-        else:
-            self.enemy_info.configure(text="Generate an enemy to continue.")
         self.history.delete(*self.history.get_children())
         for b in reversed(self.campaign.state["battles"]):
             self.history.insert("", "end", iid=b["id"], values=(b["created"][:19].replace("T", " ") + " UTC", b.get("outcome", b["status"]), b.get("duration", "—"), b["id"]))
-        busy = bool(self.campaign.pending_action())
-        self.run_button.configure(state="disabled" if busy or not self.campaign.can_deploy() or not self.campaign.enemy else "normal")
-        self.generate_button.configure(state="disabled" if busy or not self.campaign.has_campaign else "normal")
-        if not self.campaign.player:
-            self.deployment_info.configure(text="Deployment requires 1–10 hulls.")
-        else:
-            unready = self.campaign.unready_ships()
-            if unready:
-                names = ", ".join(ship.findtext("Name", "Unnamed hull") for ship in unready)
-                self.deployment_info.configure(text=f"Unavailable until repaired: {names}")
-            elif not 1 <= len(self.campaign.player.ships) <= 10:
-                self.deployment_info.configure(text="Deployment requires 1–10 hulls.")
-            else:
-                self.deployment_info.configure(text="All hulls ready for deployment.")
         self._refresh_menu()
         self.refresh_inventory()
-        self.refresh_refit()
         self.refresh_repair()
 
     def refresh_repair(self, event=None):
@@ -1089,8 +965,6 @@ class App(tk.Tk):
     def select_ship(self, event=None):
         selection = self.ships.selection()
         if not selection or not self.campaign.player:
-            if hasattr(self, "refit_selected_button"):
-                self.refit_selected_button.configure(state="disabled")
             self.refresh_repair()
             return
         self.selected = int(selection[0])
@@ -1100,9 +974,6 @@ class App(tk.Tk):
         ship = self.campaign.player.ships[self.selected]
         self.name.set(ship.findtext("Name", ""))
         self.number.set(ship.findtext("Number", "0"))
-        self.loadout_options = [(f, i) for f in self.templates if f.faction == self.campaign.player.faction for i, s in enumerate(f.ships) if s.findtext("HullType") == ship.findtext("HullType")]
-        self.loadouts["values"] = [f"{f.name} / {f.ships[i].findtext('Name')}" for f, i in self.loadout_options]
-        self.loadouts.set("")
         self.equipment.delete(*self.equipment.get_children())
         state = (self.campaign.state.get("ship_state") or {}).get(ship.findtext("Key"), {})
         records = {
@@ -1144,8 +1015,6 @@ class App(tk.Tk):
             self.equipment.insert(
                 "", "end", iid=f"missing:{socket_key}", values=(f"{component} (missing)", label)
             )
-        if hasattr(self, "refit_selected_button"):
-            self.refit_selected_button.configure(state="disabled" if self.campaign.pending_action() else "normal")
         self.refresh_repair()
 
     def load_template(self):
@@ -1337,17 +1206,6 @@ class App(tk.Tk):
             self.status.set(f"Scrapped {scrapped.replace('Stock/', '')}. No credits or spare parts returned.")
         self.guarded(action)
 
-    def start_selected_refit(self):
-        def action():
-            if self.selected is None or not self.campaign.player:
-                raise ValueError("Select a hull to refit.")
-            ship = self.campaign.player.ships[self.selected]
-            self.refits.start(ship_keys=[ship.findtext("Key")])
-            self.refresh()
-            self.tabs.select(self.refit_tab)
-            self.status.set("Starting NEBULOUS and opening the selected hull in the fleet editor…")
-        self.guarded(action)
-
     def export(self):
         path = filedialog.asksaveasfilename(defaultextension=".fleet", initialfile="NBC Player.fleet", filetypes=[("NEBULOUS fleet", "*.fleet")])
         if path:
@@ -1362,48 +1220,11 @@ class App(tk.Tk):
             self.guarded(action)
             self.status.set(f"Exported {path}")
 
-    def generate(self):
-        def action():
-            self.editable()
-            budget = int(self.budget.get())
-            if not 1 <= budget <= 30000:
-                raise ValueError("Choose a target from 1 to 30,000 points.")
-            record = self.generation.start(self.faction.get(), budget)
-            self.refresh()
-            self.status.set(f"Randomly fitted enemy ready: {record['ships']} ships / {record['actual_points']:,} points.")
-        self.guarded(action)
-
-    def launch(self):
-        def action():
-            self.campaign.launch()
-            self.refresh()
-            self.status.set("Battle requested. Waiting for NEBULOUS to load the bridge…")
-        self.guarded(action)
-
-    def cancel(self):
-        if self.campaign.state.get("active_battle") and messagebox.askyesno("Cancel battle request", "Stop tracking this battle? The game will stay open. No result or reward will be applied."):
-            self.guarded(self.campaign.cancel)
-            self.refresh()
-
     def poll(self):
         try:
             self.campaign.pump_game()
             if self.campaign.runtime.purpose:
                 self.status.set(self.campaign.runtime.message)
-            if self.refits.active:
-                changed = self.refits.collect()
-                if changed:
-                    self.refresh()
-                    self.tabs.select(self.refit_tab)
-                    self.deiconify()
-                    self.lift()
-                    self.attributes("-topmost", True)
-                    self.after(700, lambda: self.attributes("-topmost", False))
-                    self.focus_force()
-                    self.status.set("Refit draft ready for review." if self.refits.active else "Refit cancelled. Approved fleet and inventory preserved.")
-                elif self.refits.active["stage"] != "review":
-                    self.status.set(self.refits.status())
-                    self.refit_message.set(self.refits.status())
             if self.campaign.state.get("active_battle"):
                 result = self.campaign.collect()
                 if result:
