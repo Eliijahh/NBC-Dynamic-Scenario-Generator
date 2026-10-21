@@ -5,7 +5,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
 
-from nbc.core import Campaign, Fleet, DEFAULT_GAME, DEFAULT_STARTING_CREDITS, ROOT, discover, put
+from nbc.core import Campaign, Fleet, DEFAULT_GAME, DEFAULT_STARTING_CREDITS, ROOT, discover, put, ship_damage_fraction
 from nbc.economy import EconomyService, PriceError, format_credits
 from nbc.fitting import Catalog, CatalogError
 from nbc.generation import GenerationService
@@ -79,8 +79,7 @@ class App(tk.Tk):
     def __init__(self, game=DEFAULT_GAME, data=None):
         super().__init__()
         self.title("NEBULOUS · Campaign Command / Proof of Concept")
-        self.geometry("1260x820")
-        self.minsize(1080, 700)
+        self._center_window(1520, 960)
         self.configure(bg=BG)
         self.library = CampaignLibrary(Path(data) if data else ROOT / "data")
         self.campaign = self._startup_campaign(game)
@@ -107,6 +106,17 @@ class App(tk.Tk):
         self.show_menu()
         self.protocol("WM_DELETE_WINDOW", self.close)
         self.after(1500, self.poll)
+
+    def _center_window(self, preferred_width, preferred_height):
+        """Open large enough for the Fleet controls, centered on the current screen."""
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        width = min(preferred_width, max(900, screen_width - 80), screen_width)
+        height = min(preferred_height, max(650, screen_height - 100), screen_height)
+        x = max(0, (screen_width - width) // 2)
+        y = max(0, (screen_height - height) // 2)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+        self.minsize(min(1200, width), min(800, height))
 
     def _startup_campaign(self, game):
         """Open the most recently played campaign, falling back to the legacy root save."""
@@ -269,7 +279,19 @@ class App(tk.Tk):
         self.refit_selected_button.pack(anchor="w", pady=8)
         ttk.Button(right, text="Refit whole fleet → NEBULOUS", command=self.start_refit).pack(anchor="w", pady=(0, 8))
         ttk.Label(right, text="Buy spare equipment in Inventory before opening a refit. Whole-fleet refit is limited to ten hulls; individual hulls can always be refitted.", style="Muted.TLabel", wraplength=440).pack(anchor="w")
-        self.equipment = self.tree(right, ("component", "contents"), ("INSTALLED EQUIPMENT", "LOAD"), (250, 150), height=4)
+        self.equipment = self.tree(right, ("component", "contents"), ("INSTALLED EQUIPMENT", "STATUS / LOAD"), (250, 170), height=4)
+        self.equipment.bind("<<TreeviewSelect>>", self.refresh_repair)
+        ttk.Label(right, text="REPAIR", foreground=ACCENT).pack(anchor="w", pady=(14, 4))
+        self.repair_info = ttk.Label(right, text="Select a hull to inspect repair costs.", style="Muted.TLabel", wraplength=440)
+        self.repair_info.pack(anchor="w")
+        repair_buttons = ttk.Frame(right)
+        repair_buttons.pack(anchor="w", pady=8)
+        self.repair_selected_button = ttk.Button(repair_buttons, text="Repair selected", command=self.repair_selected)
+        self.repair_selected_button.pack(side="left", padx=(0, 8))
+        self.repair_all_button = ttk.Button(repair_buttons, text="Repair all", command=self.repair_all)
+        self.repair_all_button.pack(side="left", padx=(0, 8))
+        self.scrap_component_button = ttk.Button(repair_buttons, text="Scrap component", command=self.scrap_component)
+        self.scrap_component_button.pack(side="left")
         self.build_refit_tabs()
         self.build_settings_screen()
 
@@ -293,7 +315,9 @@ class App(tk.Tk):
         self.run_button = ttk.Button(launchbar, text="Run battle  →  NEBULOUS", style="Accent.TButton", command=self.launch)
         self.run_button.pack(side="left")
         ttk.Button(launchbar, text="Cancel pending request", command=self.cancel).pack(side="left", padx=12)
-        ttk.Label(self.battle_tab, text="First run: install the bridge, launch NEBULOUS once with “NBC Campaign Bridge” enabled, then return here.\nThe bridge exports the fitting catalogue and creates local skirmishes. You choose deployment and play.\nResults appear here automatically when the battle ends. Damage is recorded for review; it is not restored in the next battle yet.", style="Muted.TLabel", wraplength=1050).pack(anchor="w")
+        self.deployment_info = ttk.Label(self.battle_tab, text="", foreground=ACCENT)
+        self.deployment_info.pack(anchor="w", pady=(0, 8))
+        ttk.Label(self.battle_tab, text="First run: install the bridge, launch NEBULOUS once with “NBC Campaign Bridge” enabled, then return here.\nThe bridge exports the fitting catalogue and creates local skirmishes. You choose deployment and play.\nResults appear here automatically when the battle ends. Damaged ships must be repaired on the Fleet tab before deployment.", style="Muted.TLabel", wraplength=1050).pack(anchor="w")
 
         ttk.Label(self.result_tab, text="Battle history", style="Sub.TLabel").pack(anchor="w", pady=(0, 12))
         self.history = self.tree(self.result_tab, ("time", "outcome", "duration", "id"), ("ENGAGEMENT", "OUTCOME", "SECONDS", "BATTLE ID"), (230, 140, 100, 330), height=5)
@@ -933,12 +957,16 @@ class App(tk.Tk):
                 key = s.findtext("Key", "")
                 item = states.get(key, {})
                 status = item.get("status", "ready")
-                condition = float(item.get("condition", 1.0) or 0)
-                if status == "ready" and condition < 1:
+                if status != "lost" and item.get("components"):
                     status = "damaged"
                 if status == "ready":
                     ready += 1
-                label = "Lost" if status == "lost" else f"Damaged {condition:.0%}" if status == "damaged" else status.title()
+                if status == "damaged":
+                    label = f"{ship_damage_fraction(s, item):.0%} Damaged"
+                elif status == "lost":
+                    label = "Lost"
+                else:
+                    label = status.title()
                 rows.append(
                     (
                         i,
@@ -985,18 +1013,85 @@ class App(tk.Tk):
         busy = bool(self.campaign.pending_action())
         self.run_button.configure(state="disabled" if busy or not self.campaign.can_deploy() or not self.campaign.enemy else "normal")
         self.generate_button.configure(state="disabled" if busy or not self.campaign.has_campaign else "normal")
+        if not self.campaign.player:
+            self.deployment_info.configure(text="Deployment requires 1–10 hulls.")
+        else:
+            unready = self.campaign.unready_ships()
+            if unready:
+                names = ", ".join(ship.findtext("Name", "Unnamed hull") for ship in unready)
+                self.deployment_info.configure(text=f"Unavailable until repaired: {names}")
+            elif not 1 <= len(self.campaign.player.ships) <= 10:
+                self.deployment_info.configure(text="Deployment requires 1–10 hulls.")
+            else:
+                self.deployment_info.configure(text="All hulls ready for deployment.")
         self._refresh_menu()
         self.refresh_inventory()
         self.refresh_refit()
+        self.refresh_repair()
+
+    def refresh_repair(self, event=None):
+        if not hasattr(self, "repair_info"):
+            return
+        busy = bool(self.campaign.pending_action())
+        if not self.campaign.player or self.selected is None or not 0 <= self.selected < len(self.campaign.player.ships):
+            self.repair_info.configure(text="Select a hull to inspect repair costs.")
+            self.repair_selected_button.configure(state="disabled")
+            self.repair_all_button.configure(text="Repair all", state="disabled")
+            self.scrap_component_button.configure(state="disabled")
+            return
+        can_scrap = bool(self.equipment.selection()) and not busy
+        key = self.campaign.player.ships[self.selected].findtext("Key")
+        try:
+            quote = self.economy.repair_quote(key)
+        except Exception as exc:
+            self.repair_info.configure(text=str(exc))
+            self.repair_selected_button.configure(state="disabled")
+        else:
+            missing = len(quote["destroyed_components"])
+            if quote["needs_repair"]:
+                text = f"{len(quote['repairable'])} damaged component(s) · repair {format_credits(quote['cost'])}"
+                if missing:
+                    text += f" · {missing} destroyed component(s) require scrapping or refit"
+                if self.campaign.credits < quote["cost"]:
+                    text += " · insufficient credits"
+                self.repair_info.configure(text=text)
+                self.repair_selected_button.configure(
+                    state="disabled" if busy or self.campaign.credits < quote["cost"] else "normal"
+                )
+            elif missing:
+                self.repair_info.configure(
+                    text=f"Damaged · {missing} destroyed component(s) require scrapping or refit"
+                )
+                self.repair_selected_button.configure(state="disabled")
+            else:
+                self.repair_info.configure(text="Ready · no repair needed.")
+                self.repair_selected_button.configure(state="disabled")
+        self.scrap_component_button.configure(state="normal" if can_scrap else "disabled")
+        try:
+            quotes = self.economy.repair_quotes()
+        except Exception:
+            self.repair_all_button.configure(text="Repair all", state="disabled")
+            return
+        damaged = [quote for quote in quotes if quote["needs_repair"]]
+        if not damaged:
+            self.repair_all_button.configure(text="Repair all", state="disabled")
+            return
+        total = sum(quote["cost"] for quote in damaged)
+        self.repair_all_button.configure(
+            text=f"Repair all ({len(damaged)} · {format_credits(total)})",
+            state="disabled" if busy or self.campaign.credits < total else "normal",
+        )
 
     def select_ship(self, event=None):
         selection = self.ships.selection()
         if not selection or not self.campaign.player:
             if hasattr(self, "refit_selected_button"):
                 self.refit_selected_button.configure(state="disabled")
+            self.refresh_repair()
             return
         self.selected = int(selection[0])
         if not 0 <= self.selected < len(self.campaign.player.ships):
+            self.refresh_repair()
             return
         ship = self.campaign.player.ships[self.selected]
         self.name.set(ship.findtext("Name", ""))
@@ -1005,12 +1100,49 @@ class App(tk.Tk):
         self.loadouts["values"] = [f"{f.name} / {f.ships[i].findtext('Name')}" for f, i in self.loadout_options]
         self.loadouts.set("")
         self.equipment.delete(*self.equipment.get_children())
+        state = (self.campaign.state.get("ship_state") or {}).get(ship.findtext("Key"), {})
+        records = {
+            entry.get("socket"): entry
+            for entry in (state.get("components") or [])
+            if entry.get("socket")
+        }
+
+        def damage_text(record):
+            try:
+                health = float(record.get("health", 1.0) or 0.0)
+            except (TypeError, ValueError):
+                health = 0.0
+            return f"{max(0.0, min(1.0, 1.0 - health)):.0%} damaged"
+
+        socket_keys = set()
         for i, socket in enumerate(ship.findall("SocketMap/HullSocket")):
-            loads = socket.findall(".//MagSaveData")
-            contents = ", ".join(f"{m.findtext('Quantity', '?')} {m.findtext('MunitionKey', '').replace('Stock/', '')}" for m in loads)
-            self.equipment.insert("", "end", iid=str(i), values=(socket.findtext("ComponentName", "").replace("Stock/", ""), contents))
+            socket_key = (socket.findtext("Key") or "").strip()
+            socket_keys.add(socket_key)
+            component = socket.findtext("ComponentName", "").replace("Stock/", "")
+            record = records.get(socket_key)
+            if record and record.get("destroyed"):
+                contents = "DESTROYED"
+            elif record:
+                contents = damage_text(record)
+            else:
+                loads = socket.findall(".//MagSaveData")
+                contents = ", ".join(
+                    f"{m.findtext('Quantity', '?')} {m.findtext('MunitionKey', '').replace('Stock/', '')}"
+                    for m in loads
+                )
+            self.equipment.insert("", "end", iid=str(i), values=(component, contents))
+        for entry in state.get("components") or []:
+            socket_key = entry.get("socket")
+            if socket_key in socket_keys:
+                continue
+            component = (entry.get("component") or "Unknown component").replace("Stock/", "")
+            label = "DESTROYED" if entry.get("destroyed") else damage_text(entry)
+            self.equipment.insert(
+                "", "end", iid=f"missing:{socket_key}", values=(f"{component} (missing)", label)
+            )
         if hasattr(self, "refit_selected_button"):
             self.refit_selected_button.configure(state="disabled" if self.campaign.pending_action() else "normal")
+        self.refresh_repair()
 
     def load_template(self):
         def action():
@@ -1103,6 +1235,104 @@ class App(tk.Tk):
             )
         self.guarded(action)
 
+    def repair_selected(self):
+        def action():
+            if self.selected is None or not self.campaign.player:
+                raise ValueError("Select a hull to repair.")
+            ship = self.campaign.player.ships[self.selected]
+            key = ship.findtext("Key")
+            quote = self.economy.repair_quote(key)
+            if not quote["damaged"]:
+                raise ValueError(f"{quote['name'] or 'That hull'} is already ready.")
+            if not quote["needs_repair"]:
+                raise ValueError(
+                    f"{quote['name'] or 'That hull'} has no repairable component damage. "
+                    "Scrap or refit its destroyed components first."
+                )
+            if quote["cost"] and not messagebox.askyesno(
+                "Repair ship",
+                f"Repair {quote['name'] or 'this hull'} for {format_credits(quote['cost'])}? "
+                f"Balance {format_credits(self.campaign.credits)}.",
+                parent=self,
+            ):
+                return
+            repaired = self.economy.repair_ship(key)
+            self.refresh()
+            self.status.set(
+                f"Repaired {repaired['name'] or 'hull'} for {format_credits(repaired['cost'])}. "
+                f"Balance {format_credits(self.campaign.credits)}."
+            )
+        self.guarded(action)
+
+    def repair_all(self):
+        def action():
+            if not self.campaign.player:
+                raise ValueError("There is no campaign fleet to repair.")
+            quotes = [quote for quote in self.economy.repair_quotes() if quote["needs_repair"]]
+            if not quotes:
+                raise ValueError("No component damage needs repair.")
+            total = sum(quote["cost"] for quote in quotes)
+            if total and not messagebox.askyesno(
+                "Repair all ships",
+                f"Repair {len(quotes)} ships for {format_credits(total)}? "
+                f"Balance {format_credits(self.campaign.credits)}.",
+                parent=self,
+            ):
+                return
+            repaired, spent = self.economy.repair_all()
+            self.refresh()
+            self.status.set(
+                f"Repaired {len(repaired)} ships for {format_credits(spent)}. "
+                f"Balance {format_credits(self.campaign.credits)}."
+            )
+        self.guarded(action)
+
+    def scrap_component(self):
+        def action():
+            if self.selected is None or not self.campaign.player:
+                raise ValueError("Select a hull first.")
+            selection = self.equipment.selection()
+            if not selection:
+                raise ValueError("Select a component to scrap.")
+            ship = self.campaign.player.ships[self.selected]
+            selected_id = selection[0]
+            if selected_id.startswith("missing:"):
+                socket_key = selected_id.split(":", 1)[1]
+                records = (
+                    (self.campaign.state.get("ship_state") or {})
+                    .get(ship.findtext("Key"), {})
+                    .get("components")
+                    or []
+                )
+                record = next((entry for entry in records if entry.get("socket") == socket_key), None)
+                if record is None:
+                    raise ValueError("That destroyed component record is no longer present.")
+                component = (record.get("component") or "").strip()
+            else:
+                sockets = ship.findall("SocketMap/HullSocket")
+                try:
+                    socket_index = int(selected_id)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("Select a component to scrap.") from exc
+                if not 0 <= socket_index < len(sockets):
+                    raise ValueError("That equipment socket is no longer installed.")
+                socket = sockets[socket_index]
+                component = (socket.findtext("ComponentName") or "").strip()
+                socket_key = (socket.findtext("Key") or "").strip()
+            if not component:
+                raise ValueError("That component is no longer present.")
+            if not messagebox.askyesno(
+                "Scrap component",
+                f"Permanently scrap {component.replace('Stock/', '')} from "
+                f"{ship.findtext('Name', 'this hull')}? No credits or spare parts are returned.",
+                parent=self,
+            ):
+                return
+            scrapped = self.campaign.scrap_installed_component(ship.findtext("Key"), socket_key)
+            self.refresh()
+            self.status.set(f"Scrapped {scrapped.replace('Stock/', '')}. No credits or spare parts returned.")
+        self.guarded(action)
+
     def start_selected_refit(self):
         def action():
             if self.selected is None or not self.campaign.player:
@@ -1118,8 +1348,12 @@ class App(tk.Tk):
         path = filedialog.asksaveasfilename(defaultextension=".fleet", initialfile="NBC Player.fleet", filetypes=[("NEBULOUS fleet", "*.fleet")])
         if path:
             def action():
-                if not self.campaign.player or not self.campaign.can_deploy():
+                if not self.campaign.player or not 1 <= len(self.campaign.player.ships) <= 10:
                     raise ValueError("Export requires 1–10 ships. Mission deployment selection is not implemented yet.")
+                unready = self.campaign.unready_ships()
+                if unready:
+                    names = ", ".join(ship.findtext("Name", "Unnamed hull") for ship in unready)
+                    raise ValueError(f"Repair damaged ships before exporting: {names}.")
                 self.campaign.player.save(path)
             self.guarded(action)
             self.status.set(f"Exported {path}")

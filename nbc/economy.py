@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
-from .core import ROOT, read_xml
+from .core import ROOT, read_xml, ship_state_item
 from .fitting import Catalog, empty_ship
 
 DEFAULT_PRICE_FILE = ROOT / "prices.json"
@@ -42,10 +42,11 @@ def _round_to(value, step):
 class PriceBook:
     """Formula-driven prices with optional per-item overrides."""
 
-    def __init__(self, formula, overrides, sale_percent=10, source=None):
+    def __init__(self, formula, overrides, sale_percent=10, source=None, repair_discount_percent=30):
         self.formula = formula
         self.overrides = overrides
         self.sale_percent = sale_percent
+        self.repair_discount_percent = repair_discount_percent
         self.source = Path(source) if source is not None else None
 
     @classmethod
@@ -62,6 +63,9 @@ class PriceBook:
         sale_percent = _whole_number(data.get("sale_percent", 10), "sale_percent")
         if sale_percent > 100:
             raise PriceError("sale_percent must be between 0 and 100.")
+        repair_discount_percent = _whole_number(data.get("repair_discount_percent", 30), "repair_discount_percent")
+        if not 0 <= repair_discount_percent <= 99:
+            raise PriceError("repair_discount_percent must be between 0 and 99.")
 
         raw_formula = data.get("formula")
         if not isinstance(raw_formula, dict):
@@ -98,7 +102,7 @@ class PriceBook:
                 str(key): _whole_number(value, f"{kind}.{key}")
                 for key, value in values.items()
             }
-        return cls(formula, overrides, sale_percent=sale_percent, source=path)
+        return cls(formula, overrides, sale_percent=sale_percent, repair_discount_percent=repair_discount_percent, source=path)
 
     def _derived(self, kind, points):
         try:
@@ -133,6 +137,21 @@ class PriceBook:
 
     def sale_value(self, price):
         return max(0, int(price) * self.sale_percent // 100)
+
+    def repair_cost(self, component_value, damage):
+        """Price repairing a damage fraction as discounted component value.
+
+        A flat ``repair_discount_percent`` is removed so restoring a component is
+        always cheaper than buying a replacement.
+        """
+        try:
+            damage = float(damage)
+        except (TypeError, ValueError) as exc:
+            raise PriceError("Component damage must be a number.") from exc
+        damage = max(0.0, min(1.0, damage))
+        if damage <= 0 or component_value <= 0:
+            return 0
+        return max(1, int(round(component_value * damage * (100 - self.repair_discount_percent) / 100)))
 
     def validate_catalog(self, catalog):
         """Confirm every exported hull and component resolves to a positive price."""
@@ -337,6 +356,130 @@ class EconomyService:
         )
         return returned, refund
 
+    def _roster_ship(self, key):
+        if not self.campaign.player:
+            return None
+        return next((s for s in self.campaign.player.ships if s.findtext("Key") == key), None)
+
+    def repair_quote(self, key):
+        """Return the per-component damage and the credit cost to repair one hull."""
+        ship = self._roster_ship(key)
+        if ship is None:
+            raise ValueError("That hull is not in the campaign roster.")
+        state = (self.campaign.state.get("ship_state") or {}).get(key, {})
+        records = []
+        repairable = []
+        destroyed = []
+        total = 0
+        for entry in state.get("components") or []:
+            if not isinstance(entry, dict):
+                continue
+            component = (entry.get("component") or "").strip()
+            try:
+                health = float(entry.get("health", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                health = 0.0
+            health = max(0.0, min(1.0, health))
+            is_destroyed = bool(entry.get("destroyed")) or health <= 0.0
+            value = self.component_price(component) if component else 0
+            record = {
+                "socket": (entry.get("socket") or "").strip(),
+                "component": component,
+                "health": 0.0 if is_destroyed else health,
+                "damage": 1.0 if is_destroyed else 1.0 - health,
+                "destroyed": is_destroyed,
+                "value": value,
+                "cost": 0,
+            }
+            if is_destroyed:
+                destroyed.append(record)
+            else:
+                record["cost"] = self.price_book().repair_cost(value, record["damage"])
+                total += record["cost"]
+                if record["damage"] > 0:
+                    repairable.append(record)
+            records.append(record)
+        status = "damaged" if records else "ready"
+        return {
+            "key": key,
+            "name": ship.findtext("Name", ""),
+            "status": status,
+            "damaged": bool(records),
+            "needs_repair": bool(repairable),
+            "cost": total,
+            "components": records,
+            "repairable": repairable,
+            "destroyed_components": destroyed,
+        }
+
+    def repair_quotes(self):
+        """Return repair quotes for every hull currently in the roster."""
+        if not self.campaign.player:
+            return []
+        return [self.repair_quote(s.findtext("Key")) for s in self.campaign.player.ships]
+
+    def repair_ship(self, key):
+        """Repair one hull instantly and debit the campaign wallet atomically."""
+        self.campaign.ensure_idle()
+        if not self.campaign.has_campaign:
+            raise ValueError("Create or load a campaign first.")
+        quote = self.repair_quote(key)
+        if not quote["damaged"]:
+            raise ValueError(f"{quote['name'] or 'That hull'} is already ready.")
+        if not quote["needs_repair"]:
+            raise ValueError(
+                f"{quote['name'] or 'That hull'} has no repairable component damage. "
+                "Scrap or refit its destroyed components first."
+            )
+        cost = quote["cost"]
+        if self.campaign.credits < cost:
+            raise ValueError(
+                f"Not enough credits to repair {quote['name'] or 'that hull'}. "
+                f"It costs {format_credits(cost)}; your balance is {format_credits(self.campaign.credits)}."
+            )
+        with self.campaign.transaction():
+            if cost:
+                self.campaign.adjust_credits(
+                    -cost,
+                    "repair",
+                    f"Repaired {quote['name'] or key}",
+                    {
+                        "ship": key,
+                        "components": len(quote["repairable"]),
+                        "cost": cost,
+                    },
+                )
+            state = self.campaign.state.setdefault("ship_state", {})
+            state[key] = ship_state_item(quote["destroyed_components"])
+        return quote
+
+    def repair_all(self):
+        """Repair component damage on every damaged hull in one atomic change."""
+        self.campaign.ensure_idle()
+        if not self.campaign.has_campaign:
+            raise ValueError("Create or load a campaign first.")
+        quotes = [quote for quote in self.repair_quotes() if quote["needs_repair"]]
+        if not quotes:
+            raise ValueError("No component damage needs repair.")
+        total = sum(quote["cost"] for quote in quotes)
+        if self.campaign.credits < total:
+            raise ValueError(
+                f"Not enough credits to repair {len(quotes)} ships. "
+                f"The total is {format_credits(total)}; your balance is {format_credits(self.campaign.credits)}."
+            )
+        with self.campaign.transaction():
+            if total:
+                self.campaign.adjust_credits(
+                    -total,
+                    "repair",
+                    f"Repaired {len(quotes)} ships",
+                    {"ships": [quote["key"] for quote in quotes], "cost": total},
+                )
+            state = self.campaign.state.setdefault("ship_state", {})
+            for quote in quotes:
+                state[quote["key"]] = ship_state_item(quote["destroyed_components"])
+        return quotes, total
+
     def ledger(self):
         return list(self.campaign.state.get("credit_ledger") or [])
 
@@ -345,6 +488,7 @@ class EconomyService:
         return {
             "source": str(book.source) if book.source else "",
             "sale_percent": book.sale_percent,
+            "repair_discount_percent": book.repair_discount_percent,
             "component_formula": dict(book.formula["component"]),
             "hull_formula": dict(book.formula["hull"]),
             "fallback": dict(book.formula["fallback"]),

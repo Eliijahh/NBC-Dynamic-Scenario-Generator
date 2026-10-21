@@ -189,16 +189,17 @@ price and the point value one next to another
 [x] Component that have their HP be equal to 0 should be flagged as destroyed, and must be removed and scrapped and cannot be repaired
 
 4.2 Repair
-[ ] Any condition damage above zero blocks mission deployment
-[ ] Repair action for an individual ship
-[ ] Repair all action
-[ ] Repair screen or repair panel
-[ ] Show current condition and repair cost
-[ ] Repairing a damaged component should cost less than buying a new one, so the repair cost formula should account for that
-[ ] Repair is instant for PoC
-[ ] Repair consumes credits, a percentage of total component cost based on the percentage of damage of that component
-[ ] Revalidate that the ship is ready before confirming deployment.
-[ ] Show damaged ships as unavailable on the deployment screen.
+[x] Any component damage above zero or a destroyed component blocks mission deployment
+[x] Repair action for an individual ship
+[x] Repair all action
+[x] Repair screen or repair panel
+[x] Show each damaged component's damage percentage and the repair cost
+[x] Show a weighted damage percentage before the Damaged status on the fleet list
+[x] Repairing a damaged component should cost less than buying a new one, so the repair cost formula should account for that
+[x] Repair is instant for PoC
+[x] Repair consumes credits, a percentage of total component cost based on the percentage of damage of that component
+[x] Revalidate that the ship is ready before confirming deployment.
+[x] Show damaged ships as unavailable on the deployment screen.
 
 4.3 Permanent loss
 [ ] A destroyed ship is removed from the roster permanently.

@@ -25,6 +25,11 @@ class PriceBookTests(unittest.TestCase):
         self.assertEqual(book.hull_price("Stock/New Hull", 0), 100_000)
         self.assertEqual(book.sale_value(11_000), 1_100)
         self.assertEqual(book.sale_value(500_000), 50_000)
+        self.assertEqual(book.repair_discount_percent, 30)
+        self.assertEqual(book.repair_cost(10_000, 0.0), 0)
+        self.assertEqual(book.repair_cost(10_000, 0.5), 3_500)
+        self.assertEqual(book.repair_cost(10_000, 1.0), 7_000)
+        self.assertLess(book.repair_cost(10_000, 1.0), 10_000)
         self.assertEqual(format_credits(1_234_567), "1,234,567 credits")
 
     def test_overrides_are_loaded_from_a_separate_price_file(self):
@@ -33,10 +38,23 @@ class PriceBookTests(unittest.TestCase):
             data = json.loads(DEFAULT_PRICE_FILE.read_text(encoding="utf-8"))
             data["overrides"]["components"]["Stock/Test Radar"] = 1_234
             data["overrides"]["hulls"]["Stock/Test Frigate"] = 2_345
+            data["repair_discount_percent"] = 40
             path.write_text(json.dumps(data), encoding="utf-8")
             book = PriceBook.load(path)
             self.assertEqual(book.component_price("Stock/Test Radar", 10), 1_234)
             self.assertEqual(book.hull_price("Stock/Test Frigate", 100), 2_345)
+            self.assertEqual(book.repair_discount_percent, 40)
+            self.assertEqual(book.repair_cost(10_000, 0.5), 3_000)
+
+    def test_missing_repair_discount_defaults_to_thirty_percent(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "prices.json"
+            data = json.loads(DEFAULT_PRICE_FILE.read_text(encoding="utf-8"))
+            data.pop("repair_discount_percent", None)
+            path.write_text(json.dumps(data), encoding="utf-8")
+            book = PriceBook.load(path)
+            self.assertEqual(book.repair_discount_percent, 30)
+            self.assertEqual(book.repair_cost(10_000, 1.0), 7_000)
 
     def test_every_fixture_catalogue_item_has_a_positive_price(self):
         catalog = Catalog.load(FIXTURE)
@@ -125,6 +143,141 @@ class EconomyServiceTests(unittest.TestCase):
         self.assertEqual(self.c.credit_ledger[-1]["kind"], "hull-sale")
         self.assertEqual(self.c.credit_ledger[-1]["amount"], 50_000)
         self.assertEqual(self.c.credit_ledger[-1]["balance"], 550_000)
+
+    def test_repair_quote_and_selected_repair_debit_wallet(self):
+        key = self.c.player.ships[0].findtext("Key")
+        self.c.player.ships[0].find("SocketMap/HullSocket/ComponentName").text = "Stock/Test Radar"
+        self.c.save_fleets()
+        self.c.state["ship_state"][key] = {
+            "status": "damaged",
+            "components": [
+                {"socket": "socket", "component": "Stock/Test Radar", "health": 0.5, "destroyed": False}
+            ],
+        }
+
+        quote = self.economy.repair_quote(key)
+        self.assertEqual(quote["cost"], 3_850)
+        self.assertEqual(len(quote["repairable"]), 1)
+        self.assertAlmostEqual(quote["repairable"][0]["damage"], 0.5)
+        self.assertTrue(quote["damaged"])
+        repaired = self.economy.repair_ship(key)
+        self.assertEqual(repaired["cost"], 3_850)
+        self.assertEqual(self.c.credits, 996_150)
+        self.assertEqual(self.c.state["ship_state"][key], {"status": "ready"})
+        self.assertEqual(self.c.credit_ledger[-1]["kind"], "repair")
+        self.assertEqual(self.c.credit_ledger[-1]["amount"], -3_850)
+        self.assertEqual(self.c.credit_ledger[-1]["balance"], 996_150)
+        restarted = Campaign(self.c.game, self.c.data)
+        self.assertEqual(restarted.state["ship_state"][key]["status"], "ready")
+
+    def test_repair_quote_prices_each_damaged_component_separately(self):
+        ship = self.c.player.ships[0]
+        for socket_key, component in (("radar", "Stock/Test Radar"), ("cannon", "Stock/Test Cannon")):
+            socket = ET.SubElement(ship.find("SocketMap"), "HullSocket")
+            ET.SubElement(socket, "Key").text = socket_key
+            ET.SubElement(socket, "ComponentName").text = component
+        self.c.save_fleets()
+        key = ship.findtext("Key")
+        self.c.state["ship_state"][key] = {
+            "status": "damaged",
+            "components": [
+                {"socket": "radar", "component": "Stock/Test Radar", "health": 0.5, "destroyed": False},
+                {"socket": "cannon", "component": "Stock/Test Cannon", "health": 0.8, "destroyed": False},
+            ],
+        }
+
+        quote = self.economy.repair_quote(key)
+        self.assertEqual(len(quote["repairable"]), 2)
+        self.assertEqual(quote["cost"], 3_850 + 22_540)
+        self.assertEqual(self.economy.repair_ship(key)["cost"], 26_390)
+        self.assertEqual(self.c.credits, 973_610)
+        self.assertEqual(self.c.state["ship_state"][key], {"status": "ready"})
+
+    def test_repair_all_is_one_atomic_wallet_change(self):
+        self.c.player.ships[0].find("SocketMap/HullSocket/ComponentName").text = "Stock/Test Radar"
+        self.c.player.duplicate(0)
+        self.c.save_fleets()
+        keys = [ship.findtext("Key") for ship in self.c.player.ships]
+        for key in keys:
+            self.c.state["ship_state"][key] = {
+                "status": "damaged",
+                "components": [
+                    {"socket": "socket", "component": "Stock/Test Radar", "health": 0.5, "destroyed": False}
+                ],
+            }
+
+        repaired, total = self.economy.repair_all()
+        self.assertEqual(len(repaired), 2)
+        self.assertEqual(total, 7_700)
+        self.assertEqual(self.c.credits, 992_300)
+        self.assertTrue(all(self.c.ship_ready(key) for key in keys))
+        self.assertEqual(self.c.credit_ledger[-1]["kind"], "repair")
+        self.assertEqual(self.c.credit_ledger[-1]["amount"], -7_700)
+
+    def test_repair_rejects_unaffordable_ship_without_changing_state(self):
+        key = self.c.player.ships[0].findtext("Key")
+        self.c.player.ships[0].find("SocketMap/HullSocket/ComponentName").text = "Stock/Test Radar"
+        self.c.save_fleets()
+        self.c.state["ship_state"][key] = {
+            "status": "damaged",
+            "components": [
+                {"socket": "socket", "component": "Stock/Test Radar", "health": 0.5, "destroyed": False}
+            ],
+        }
+        self.c.set_credits(100)
+        before = copy.deepcopy(self.c.state)
+        with self.assertRaisesRegex(ValueError, "Not enough credits"):
+            self.economy.repair_ship(key)
+        self.assertEqual(self.c.state, before)
+
+    def test_repair_rolls_back_component_damage_and_credits_on_save_failure(self):
+        key = self.c.player.ships[0].findtext("Key")
+        self.c.player.ships[0].find("SocketMap/HullSocket/ComponentName").text = "Stock/Test Radar"
+        self.c.save_fleets()
+        self.c.state["ship_state"][key] = {
+            "status": "damaged",
+            "components": [
+                {"socket": "socket", "component": "Stock/Test Radar", "health": 0.5, "destroyed": False}
+            ],
+        }
+        before = copy.deepcopy(self.c.state)
+        with patch.object(self.c, "persist", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.economy.repair_ship(key)
+        self.assertEqual(self.c.state, before)
+
+    def test_repair_keeps_destroyed_component_until_it_is_scrapped(self):
+        ship = self.c.player.ships[0]
+        socket = ET.SubElement(ship.find("SocketMap"), "HullSocket")
+        ET.SubElement(socket, "Key").text = "spare"
+        ET.SubElement(socket, "ComponentName").text = "Stock/Test Radar"
+        self.c.save_fleets()
+        key = ship.findtext("Key")
+        self.c.state["ship_state"][key] = {
+            "status": "damaged",
+            "components": [
+                {"socket": "socket", "component": "Stock/Mk62 Cannon", "health": 0.0, "destroyed": True},
+                {"socket": "spare", "component": "Stock/Test Radar", "health": 0.5, "destroyed": False},
+            ],
+        }
+        quote = self.economy.repair_quote(key)
+        self.assertTrue(quote["damaged"])
+        self.assertTrue(quote["needs_repair"])
+        self.assertEqual(len(quote["repairable"]), 1)
+        self.assertEqual(len(quote["destroyed_components"]), 1)
+        self.assertEqual(quote["cost"], 3_850)
+        self.economy.repair_ship(key)
+        state = self.c.state["ship_state"][key]
+        self.assertEqual(state["status"], "damaged")
+        self.assertEqual(len(state["components"]), 1)
+        self.assertTrue(state["components"][0]["destroyed"])
+        self.assertFalse(self.c.ship_ready(key))
+        with self.assertRaisesRegex(ValueError, "no repairable component damage"):
+            self.economy.repair_ship(key)
+        scrapped = self.c.scrap_installed_component(key, "socket")
+        self.assertEqual(scrapped, "Stock/Mk62 Cannon")
+        self.assertEqual(self.c.state["ship_state"][key], {"status": "ready"})
+        self.assertTrue(self.c.ship_ready(key))
 
     def test_component_purchase_rolls_back_credits_and_inventory_on_save_failure(self):
         before = copy.deepcopy(self.c.state)

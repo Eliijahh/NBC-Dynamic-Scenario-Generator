@@ -9,7 +9,7 @@ import uuid
 import xml.etree.ElementTree as ET
 
 from nbc.generation import select_generated_fleet
-from nbc.core import Campaign, Fleet, DEFAULT_GAME, DEFAULT_STARTING_CREDITS, STATE_VERSION, atomic_bytes, discover, put, write_xml
+from nbc.core import Campaign, Fleet, DEFAULT_GAME, DEFAULT_STARTING_CREDITS, STATE_VERSION, atomic_bytes, discover, put, ship_damage_fraction, write_xml
 
 
 def sample(name="Test Fleet", faction="Stock/Alliance"):
@@ -106,6 +106,39 @@ class FleetTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             f.validate()
 
+    def test_ship_damage_fraction_weights_components_by_damage(self):
+        ship = fitted_ship("Resolute", 42, *[(f"slot-{index}", "Stock/Test Cannon") for index in range(10)])
+        item = {
+            "status": "damaged",
+            "components": [
+                {"socket": "slot-9", "component": "Stock/Test Cannon", "health": 0.1, "destroyed": False}
+            ],
+        }
+        self.assertAlmostEqual(ship_damage_fraction(ship, item), 0.09)
+
+        item["components"].append(
+            {"socket": "slot-8", "component": "Stock/Test Cannon", "health": 0.5, "destroyed": False}
+        )
+        self.assertAlmostEqual(ship_damage_fraction(ship, item), 0.14)
+
+        item["components"] = [
+            {"socket": "slot-9", "component": "Stock/Test Cannon", "health": 0.0, "destroyed": True}
+        ]
+        self.assertAlmostEqual(ship_damage_fraction(ship, item), 0.10)
+
+    def test_ship_damage_fraction_ignores_missing_sockets(self):
+        ship = fitted_ship(
+            "Resolute", 42, ("weapon", "Stock/Test Cannon"), ("reactor", "Stock/Test Reactor")
+        )
+        item = {
+            "status": "damaged",
+            "components": [
+                {"socket": "weapon", "component": "Stock/Test Cannon", "health": 0.5, "destroyed": False},
+                {"socket": "gone", "component": "Stock/Test Cannon", "health": 0.0, "destroyed": True},
+            ],
+        }
+        self.assertAlmostEqual(ship_damage_fraction(ship, item), 0.25)
+
     def test_enemy_seed_and_faction(self):
         pool = sample()
         a = select_generated_fleet(pool, 350, seed=123)
@@ -160,7 +193,7 @@ class CampaignSetupTests(unittest.TestCase):
         self.assertIn("<Name>Resolute</Name>", owned["ship"])
         self.assertEqual(restarted.state["mission_offers"], [])
         self.assertIsNone(restarted.state["accepted_mission"])
-        self.assertEqual(restarted.state["ship_state"][ship_key], {"condition": 1.0, "status": "ready"})
+        self.assertEqual(restarted.state["ship_state"][ship_key], {"status": "ready"})
         self.assertIsNone(restarted.pending_action())
 
     def test_owned_hulls_are_unlimited_and_survive_restart(self):
@@ -225,6 +258,63 @@ class CampaignSetupTests(unittest.TestCase):
         self.assertEqual(restarted.player.ships, [])
         self.assertEqual(restarted.state["owned_hulls"], {})
         self.assertEqual(restarted.state["inventory"]["Stock/Mk62 Cannon"], 1)
+
+    def test_scrap_installed_component_removes_it_without_inventory_return(self):
+        self.campaign.start_new_campaign(
+            "Scrap Watch", "Cmdr Vale", "Stock/Alliance", 1000, sample("Scrap Starter")
+        )
+        ship = self.campaign.player.ships[0]
+        key = ship.findtext("Key")
+        socket = ship.find("SocketMap/HullSocket")
+        socket_key = socket.findtext("Key")
+        component = socket.findtext("ComponentName")
+        credits = self.campaign.credits
+
+        scrapped = self.campaign.scrap_installed_component(key, socket_key)
+        self.assertEqual(scrapped, component)
+        self.assertIsNone(ship_by_key(self.campaign.player, key).find("SocketMap/HullSocket"))
+        self.assertEqual(self.campaign.credits, credits)
+        self.assertEqual(self.campaign.state["inventory"], {})
+        owned = ET.fromstring(self.campaign.state["owned_hulls"][key]["ship"])
+        self.assertIsNone(owned.find("SocketMap/HullSocket"))
+        restarted = Campaign(self.campaign.game, self.campaign.data)
+        self.assertIsNone(ship_by_key(restarted.player, key).find("SocketMap/HullSocket"))
+
+    def test_damaged_ships_block_deployment_until_repaired(self):
+        self.campaign.start_new_campaign(
+            "Repair Watch", "Cmdr Vale", "Stock/Alliance", 1000, sample("Repair Starter")
+        )
+        key = self.campaign.player.ships[0].findtext("Key")
+        self.assertTrue(self.campaign.can_deploy())
+        self.campaign.state["ship_state"][key] = {
+            "status": "damaged",
+            "components": [
+                {"socket": "socket", "component": "Stock/Mk62 Cannon", "health": 0.5, "destroyed": False}
+            ],
+        }
+        self.assertFalse(self.campaign.can_deploy())
+        self.assertEqual([ship.findtext("Key") for ship in self.campaign.unready_ships()], [key])
+        self.campaign.state["ship_state"][key] = {"status": "ready"}
+        self.assertTrue(self.campaign.can_deploy())
+
+    def test_refit_reconciliation_clears_damage_for_a_replaced_component(self):
+        self.campaign.start_new_campaign(
+            "Refit Damage", "Cmdr Vale", "Stock/Alliance", 1000, sample("Refit Starter")
+        )
+        key = self.campaign.player.ships[0].findtext("Key")
+        self.campaign.state["ship_state"][key] = {
+            "status": "damaged",
+            "components": [
+                {"socket": "socket", "component": "Stock/Mk62 Cannon", "health": 0.5, "destroyed": False}
+            ],
+        }
+        self.campaign.sync_ship_state()
+        self.assertFalse(self.campaign.ship_ready(key))
+
+        put(self.campaign.player.ships[0].find("SocketMap/HullSocket"), "ComponentName", "Stock/Test Cannon")
+        self.campaign.sync_ship_state()
+        self.assertTrue(self.campaign.ship_ready(key))
+        self.assertEqual(self.campaign.state["ship_state"][key], {"status": "ready"})
 
     def test_existing_v2_roster_is_backfilled_into_owned_hulls(self):
         data = self.root / "owned-hull-migration"
@@ -292,7 +382,7 @@ class CampaignSetupTests(unittest.TestCase):
         self.assertEqual(campaign.campaign_status, "active")
         self.assertEqual(campaign.state["inventory"], {"Stock/Mk62 Cannon": 2})
         self.assertEqual(campaign.state["ship_results"][ship_key]["Condition"], "0.72")
-        self.assertEqual(campaign.state["ship_state"][ship_key], {"condition": 1.0, "status": "ready"})
+        self.assertEqual(campaign.state["ship_state"][ship_key], {"status": "ready"})
         self.assertEqual(campaign.state["mission_offers"], [])
         self.assertIsNone(campaign.state["accepted_mission"])
         self.assertEqual(campaign.state["future_data"], {"preserve": True})
@@ -331,6 +421,68 @@ class CampaignSetupTests(unittest.TestCase):
 
         Campaign(self.campaign.game, data)
         self.assertEqual(len(list((data / "campaign-backups").iterdir())), 1)
+
+    def test_legacy_destroyed_components_migrate_to_component_damage(self):
+        data = self.root / "component-damage-migration"
+        data.mkdir()
+        fleet = sample("Migrated Damage")
+        key = fleet.ships[0].findtext("Key")
+        (data / "campaign.json").write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "campaign": {"name": "Damage Watch", "faction": "Stock/Alliance", "credits": 42},
+                    "campaign_status": "active",
+                    "player_xml": ET.tostring(fleet.root, encoding="unicode"),
+                    "ship_state": {
+                        key: {
+                            "condition": 0.5,
+                            "status": "damaged",
+                            "destroyed_components": [
+                                {"socket": "socket", "component": "Stock/Mk62 Cannon"}
+                            ],
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        campaign = Campaign(self.campaign.game, data)
+
+        self.assertEqual(
+            campaign.state["ship_state"][key],
+            {
+                "status": "damaged",
+                "components": [
+                    {"socket": "socket", "component": "Stock/Mk62 Cannon", "health": 0.0, "destroyed": True}
+                ],
+            },
+        )
+        self.assertFalse(campaign.ship_ready(key))
+
+    def test_unattributable_legacy_condition_is_dropped(self):
+        data = self.root / "partial-condition-migration"
+        data.mkdir()
+        fleet = sample("Partial Damage")
+        key = fleet.ships[0].findtext("Key")
+        (data / "campaign.json").write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "campaign": {"name": "Partial Watch", "faction": "Stock/Alliance", "credits": 42},
+                    "campaign_status": "active",
+                    "player_xml": ET.tostring(fleet.root, encoding="unicode"),
+                    "ship_state": {key: {"condition": 0.4, "status": "damaged"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        campaign = Campaign(self.campaign.game, data)
+
+        self.assertEqual(campaign.state["ship_state"][key], {"status": "ready"})
+        self.assertTrue(campaign.ship_ready(key))
 
     def test_newer_or_invalid_schema_versions_are_rejected(self):
         for version, message in ((99, "newer"), ("1", "invalid")):
@@ -459,7 +611,7 @@ class ExchangeTests(unittest.TestCase):
         put(root, "Duration", 600)
         ships = ET.SubElement(root, "Ships")
         ship = ET.SubElement(ships, "Ship")
-        for key, value in {"Key": self.campaign.player.ships[0].findtext("Key"), "Side": "Player", "Condition": "0.72", "Status": "NotEliminated"}.items():
+        for key, value in {"Key": self.campaign.player.ships[0].findtext("Key"), "Side": "Player", "Condition": "1", "Status": "NotEliminated"}.items():
             put(ship, key, value)
         write_xml(Path(battle["directory"]) / "result.xml", root)
 
@@ -523,7 +675,23 @@ class ExchangeTests(unittest.TestCase):
         restarted = Campaign(self.campaign.game, self.campaign.data)
         self.assertEqual(len(restarted.state["battles"]), 1)
         key = self.campaign.player.ships[0].findtext("Key")
-        self.assertEqual(restarted.state["ship_results"][key]["Condition"], "0.72")
+        self.assertEqual(restarted.state["ship_results"][key]["Condition"], "1")
+        self.assertEqual(restarted.state["ship_state"][key], {"status": "ready"})
+
+    def test_prepare_rejects_damaged_ship_until_repaired(self):
+        key = self.campaign.player.ships[0].findtext("Key")
+        self.campaign.state["ship_state"][key] = {
+            "status": "damaged",
+            "components": [
+                {"socket": "socket", "component": "Stock/Mk62 Cannon", "health": 0.5, "destroyed": False}
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "Repair damaged ships"):
+            self.campaign.prepare()
+        self.assertIsNone(self.campaign.state["active_battle"])
+        self.campaign.state["ship_state"][key] = {"status": "ready"}
+        battle = self.campaign.prepare()
+        self.assertEqual(self.campaign.state["active_battle"]["id"], battle["id"])
 
     def test_wrong_battle_result_rejected(self):
         battle = self.campaign.prepare()
@@ -544,7 +712,7 @@ class ExchangeTests(unittest.TestCase):
         self.assertEqual(self.campaign.state["ship_results"], {})
         self.assertEqual(self.campaign.state["battles"], [])
 
-    def test_condition_damage_and_unselected_ships_persist(self):
+    def test_component_damage_and_unselected_ships_persist(self):
         resolute = fitted_ship(
             "Resolute", 42, ("weapon", "Stock/Test Cannon"), ("reactor", "Stock/Test Reactor")
         )
@@ -570,15 +738,22 @@ class ExchangeTests(unittest.TestCase):
         self.campaign.collect()
 
         states = self.campaign.state["ship_state"]
-        self.assertEqual(states[resolute_key], {"condition": 0.72, "status": "damaged"})
-        self.assertEqual(states[sentinel_key], {"condition": 1.0, "status": "ready"})
+        self.assertEqual(
+            states[resolute_key],
+            {
+                "status": "damaged",
+                "components": [
+                    {"socket": "weapon", "component": "Stock/Test Cannon", "health": 0.4, "destroyed": False}
+                ],
+            },
+        )
+        self.assertEqual(states[sentinel_key], {"status": "ready"})
         self.assertEqual(ET.tostring(ship_by_key(self.campaign.player, sentinel_key)), sentinel_xml)
         self.assertIsNotNone(
             ship_by_key(self.campaign.player, resolute_key).find("SocketMap/HullSocket[Key='weapon']")
         )
         restarted = Campaign(self.campaign.game, self.campaign.data)
-        self.assertEqual(restarted.state["ship_state"][resolute_key]["condition"], 0.72)
-        self.assertEqual(restarted.state["ship_state"][resolute_key]["status"], "damaged")
+        self.assertEqual(restarted.state["ship_state"][resolute_key], states[resolute_key])
 
     def test_retired_survivors_and_eliminated_ships_are_separated(self):
         survivor = fitted_ship(
@@ -618,13 +793,18 @@ class ExchangeTests(unittest.TestCase):
         self.assertEqual(set(self.campaign.state["ship_state"]), {survivor_key})
         self.assertEqual(
             self.campaign.state["ship_state"][survivor_key],
-            {"condition": 1.0, "status": "damaged"},
+            {
+                "status": "damaged",
+                "components": [
+                    {"socket": "weapon", "component": "Stock/Test Cannon", "health": 0.5, "destroyed": False}
+                ],
+            },
         )
         self.assertEqual(ET.tostring(self.campaign.enemy.root), enemy_xml)
         restarted = Campaign(self.campaign.game, self.campaign.data)
         self.assertEqual({ship.findtext("Key") for ship in restarted.player.ships}, {survivor_key})
 
-    def test_zero_hp_component_is_removed_and_scrapped(self):
+    def test_zero_hp_component_is_flagged_and_removed_only_when_scrapped(self):
         ship = fitted_ship(
             "Resolute", 42, ("weapon", "Stock/Test Cannon"), ("reactor", "Stock/Test Reactor")
         )
@@ -647,25 +827,37 @@ class ExchangeTests(unittest.TestCase):
         self.campaign.collect()
 
         current = ship_by_key(self.campaign.player, key)
-        self.assertIsNone(current.find("SocketMap/HullSocket[Key='weapon']"))
+        self.assertIsNotNone(current.find("SocketMap/HullSocket[Key='weapon']"))
         self.assertIsNotNone(current.find("SocketMap/HullSocket[Key='reactor']"))
         self.assertEqual(self.campaign.state["inventory"], {})
         self.assertEqual(
             self.campaign.state["ship_state"][key],
             {
-                "condition": 1.0,
                 "status": "damaged",
-                "destroyed_components": [{"socket": "weapon", "component": "Stock/Test Cannon"}],
+                "components": [
+                    {"socket": "weapon", "component": "Stock/Test Cannon", "health": 0.0, "destroyed": True}
+                ],
             },
         )
+        self.assertFalse(self.campaign.ship_ready(key))
+        self.assertFalse(self.campaign.can_deploy())
+        owned = ET.fromstring(self.campaign.state["owned_hulls"][key]["ship"])
+        self.assertIsNotNone(owned.find("SocketMap/HullSocket[Key='weapon']"))
+
+        scrapped = self.campaign.scrap_installed_component(key, "weapon")
+        self.assertEqual(scrapped, "Stock/Test Cannon")
+        current = ship_by_key(self.campaign.player, key)
+        self.assertIsNone(current.find("SocketMap/HullSocket[Key='weapon']"))
+        self.assertIsNotNone(current.find("SocketMap/HullSocket[Key='reactor']"))
+        self.assertEqual(self.campaign.state["ship_state"][key], {"status": "ready"})
+        self.assertEqual(self.campaign.state["inventory"], {})
+        self.assertTrue(self.campaign.can_deploy())
         owned = ET.fromstring(self.campaign.state["owned_hulls"][key]["ship"])
         self.assertIsNone(owned.find("SocketMap/HullSocket[Key='weapon']"))
         restarted = Campaign(self.campaign.game, self.campaign.data)
         self.assertNotIn("Stock/Test Cannon", restarted.state["inventory"])
-        self.assertEqual(
-            restarted.state["ship_state"][key]["destroyed_components"],
-            [{"socket": "weapon", "component": "Stock/Test Cannon"}],
-        )
+        self.assertEqual(restarted.state["ship_state"][key], {"status": "ready"})
+        self.assertIsNone(ship_by_key(restarted.player, key).find("SocketMap/HullSocket[Key='weapon']"))
 
     def test_undamaged_ship_is_ready(self):
         ship = fitted_ship(
@@ -683,18 +875,18 @@ class ExchangeTests(unittest.TestCase):
         self.campaign.collect()
         self.assertEqual(
             self.campaign.state["ship_state"][key],
-            {"condition": 1.0, "status": "ready"},
+            {"status": "ready"},
         )
 
-    def test_missing_report_uses_result_condition(self):
+    def test_missing_report_cannot_import_component_damage(self):
         battle = self.campaign.prepare()
         key = self.campaign.player.ships[0].findtext("Key")
         self.write_result(battle, [(key, "Resolute", "Retired", "0.4")])
-        self.campaign.collect()
-        self.assertEqual(
-            self.campaign.state["ship_state"][key],
-            {"condition": 0.4, "status": "damaged"},
-        )
+        with self.assertRaisesRegex(ValueError, "battle report is missing"):
+            self.campaign.collect()
+        self.assertEqual(self.campaign.state["battles"], [])
+        self.assertEqual(self.campaign.state["ship_results"], {})
+        self.assertIsNotNone(self.campaign.state["active_battle"])
 
     def test_invalid_condition_rejected_without_import(self):
         battle = self.campaign.prepare()

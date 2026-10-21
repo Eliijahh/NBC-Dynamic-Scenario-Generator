@@ -1,6 +1,7 @@
 {
   "version": 1,
   "sale_percent": 10,
+  "repair_discount_percent": 30,
   "formula": {
     "component": {
       "base": 1000,
