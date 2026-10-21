@@ -165,16 +165,16 @@ price and the point value one next to another
 [x] Add purchased components to spare inventory atomically with the credit debit.
 
 3.4 Store / shipyard
-[ ] Purchase screen for hulls and components.
-[ ] Hull-type filter.
-[ ] Component-type filter.
-[ ] Search or name filter.
-[ ] Show native points and credit cost.
-[ ] Show owned quantity and affordability.
-[ ] Confirm purchase before spending credits.
-[ ] Purchase success and failure messages.
-[ ] Prevent purchases during missions, battles or pending refits.
-[ ] Refresh the catalogue after a game/bridge update.
+[x] Purchase screen for hulls and components.
+[x] Hull-type filter.
+[x] Component-type filter.
+[x] Search or name filter.
+[x] Show native points and credit cost.
+[x] Show owned quantity and affordability.
+[x] Confirm purchase before spending credits.
+[x] Purchase success and failure messages.
+[x] Prevent purchases during missions, battles or pending refits.
+[x] Refresh the catalogue after a game/bridge update.
 
 
 4. DAMAGE, REPAIR AND PERMANENT LOSS

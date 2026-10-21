@@ -249,6 +249,7 @@ class App(tk.Tk):
         right.pack(side="right", fill="both", expand=True)
         self.ships = self.tree(left, ("name", "hull", "number", "status", "points"), ("SHIP", "HULL", "NUMBER", "STATUS", "POINTS"), (180, 190, 85, 105, 65))
         self.ships.bind("<<TreeviewSelect>>", self.select_ship)
+        self._enable_sorting(self.ships, self.refresh, ("number", "points"))
         buttons = ttk.Frame(left)
         buttons.pack(fill="x", pady=10)
         ttk.Button(buttons, text="Buy hull", command=self.add_hull, style="Accent.TButton").pack(side="left", padx=(0, 8))
@@ -557,19 +558,29 @@ class App(tk.Tk):
         search = ttk.Entry(controls, textvariable=self.catalog_search, width=35)
         search.pack(side="left", padx=(0, 10))
         self.catalog_search.trace_add("write", lambda *args: self.refresh_inventory())
+        ttk.Label(controls, text="Type").pack(side="left", padx=(0, 6))
+        self.catalog_type = tk.StringVar(value="All types")
+        self.type_filter = ttk.Combobox(controls, textvariable=self.catalog_type, state="readonly", width=20, values=("All types",))
+        self.type_filter.pack(side="left", padx=(0, 10))
+        self.type_filter.bind("<<ComboboxSelected>>", lambda event: self.refresh_inventory())
         ttk.Button(controls, text="Connect / open NEBULOUS", command=lambda: self.guarded(self.refits.open_game)).pack(side="left")
         self.inventory_note = tk.StringVar()
         ttk.Label(self.inventory_tab, textvariable=self.inventory_note, foreground=ACCENT, wraplength=1100).pack(anchor="w", pady=8)
+        self.affordability = tk.StringVar(value="Select a component to see its price and affordability.")
+        ttk.Label(self.inventory_tab, textvariable=self.affordability, foreground=TEXT, wraplength=1100).pack(anchor="w", pady=(0, 4))
         trade = ttk.Frame(self.inventory_tab)
         trade.pack(side="bottom", fill="x", pady=10)
         ttk.Label(trade, text="Quantity").pack(side="left")
         self.trade_quantity = tk.StringVar(value="1")
         ttk.Entry(trade, textvariable=self.trade_quantity, width=7).pack(side="left", padx=10)
+        self.trade_quantity.trace_add("write", lambda *args: self._update_affordability())
         self.buy_button = ttk.Button(trade, text="Buy → spares", command=lambda: self.trade_inventory(True), style="Accent.TButton")
         self.buy_button.pack(side="left", padx=5)
         self.sell_button = ttk.Button(trade, text="Sell spare items", command=lambda: self.trade_inventory(False))
         self.sell_button.pack(side="left", padx=5)
-        self.stock = self.tree(self.inventory_tab, ("name", "type", "spares", "installed", "price", "sale"), ("COMPONENT / UNLIMITED STOCK", "TYPE", "SPARES OWNED", "INSTALLED", "BUY", "SELL 10%"), (430, 160, 110, 100, 110, 110))
+        self.stock = self.tree(self.inventory_tab, ("name", "type", "points", "spares", "installed", "price", "sale"), ("COMPONENT / UNLIMITED STOCK", "TYPE", "POINTS", "SPARES OWNED", "INSTALLED", "BUY", "SELL 10%"), (390, 140, 70, 100, 90, 105, 105))
+        self.stock.bind("<<TreeviewSelect>>", lambda event: self._update_affordability())
+        self._enable_sorting(self.stock, self.refresh_inventory, ("points", "spares", "installed", "price", "sale"))
         self.catalog_rows = []
         self.catalog_signature = None
 
@@ -612,17 +623,31 @@ class App(tk.Tk):
             entries = {k: v for k, v in catalog.items()}
             for key in owned.keys() | fitted.keys():
                 entries.setdefault(key, {"Name": key.replace("Stock/", ""), "Type": "Existing equipment"})
+            types = sorted(
+                {str(value.get("Type") or "").strip() or "Unclassified" for value in entries.values()}
+            )
+            options = ["All types"] + types
+            if tuple(options) != tuple(self.type_filter["values"]):
+                self.type_filter.configure(values=options)
+            if self.catalog_type.get() not in options:
+                self.catalog_type.set("All types")
+            type_filter = self.catalog_type.get()
             rows = []
             for key, value in sorted(entries.items(), key=lambda x: x[1]["Name"]):
                 if query not in (value["Name"] + key).casefold():
                     continue
+                component_type = str(value.get("Type") or "").strip() or "Unclassified"
+                if type_filter != "All types" and component_type != type_filter:
+                    continue
                 price = self.economy.component_price(key)
+                points = self.economy.component_points(key)
                 rows.append(
                     (
                         key,
                         (
                             value["Name"],
-                            value.get("Type", ""),
+                            component_type,
+                            points if points else "—",
                             owned.get(key, 0),
                             fitted.get(key, 0),
                             f"{price:,}",
@@ -630,26 +655,82 @@ class App(tk.Tk):
                         ),
                     )
                 )
-            if rows == self.catalog_rows:
-                return
-            selection = self.stock.selection()
-            key = self.catalog_rows[int(selection[0])][0] if selection and int(selection[0]) < len(self.catalog_rows) else None
-            self.catalog_rows = rows
-            self.stock.delete(*self.stock.get_children())
-            for i, (rowkey, values) in enumerate(rows):
-                self.stock.insert("", "end", iid=str(i), values=values)
-                if key == rowkey:
-                    self.stock.selection_set(str(i))
+            if self.stock._sort_column:
+                index = tuple(self.stock["columns"]).index(self.stock._sort_column)
+                rows = self._sort_rows(
+                    rows,
+                    index,
+                    self.stock._sort_direction < 0,
+                    self.stock._sort_column in self.stock._sort_numeric,
+                )
+            if rows != self.catalog_rows:
+                selection = self.stock.selection()
+                key = self.catalog_rows[int(selection[0])][0] if selection and int(selection[0]) < len(self.catalog_rows) else None
+                self.catalog_rows = rows
+                self.stock.delete(*self.stock.get_children())
+                for i, (rowkey, values) in enumerate(rows):
+                    self.stock.insert("", "end", iid=str(i), values=values)
+                    if key == rowkey:
+                        self.stock.selection_set(str(i))
+            self._update_affordability()
         except Exception as exc:
             self.inventory_note.set(str(exc))
+
+    def _update_affordability(self):
+        if not hasattr(self, "stock"):
+            return
+        selection = self.stock.selection()
+        index = int(selection[0]) if selection and selection[0].isdigit() else -1
+        if not 0 <= index < len(self.catalog_rows):
+            self.affordability.set("Select a component to see its price and affordability.")
+            return
+        key, values = self.catalog_rows[index]
+        name = values[0]
+        try:
+            quantity = int(self.trade_quantity.get())
+        except ValueError:
+            self.affordability.set("Enter a quantity from 1 to 999.")
+            return
+        if not 1 <= quantity <= 999:
+            self.affordability.set("Enter a quantity from 1 to 999.")
+            return
+        total = self.economy.component_price(key) * quantity
+        balance = self.campaign.credits
+        if total <= balance:
+            self.affordability.set(
+                f"Buy {quantity} × {name}: {format_credits(total)}. "
+                f"Balance {format_credits(balance)} — affordable."
+            )
+        else:
+            self.affordability.set(
+                f"Buy {quantity} × {name}: {format_credits(total)}. "
+                f"Balance {format_credits(balance)} — short by {format_credits(total - balance)}."
+            )
 
     def trade_inventory(self, buy):
         def action():
             selection = self.stock.selection()
             if not selection:
                 raise ValueError("Select a component in the equipment store.")
-            key = self.catalog_rows[int(selection[0])][0]
+            key, values = self.catalog_rows[int(selection[0])]
             quantity = int(self.trade_quantity.get())
+            if not 1 <= quantity <= 999:
+                raise ValueError("Choose a quantity from 1 to 999.")
+            if buy:
+                total = self.economy.component_price(key) * quantity
+                balance = self.campaign.credits
+                if total > balance:
+                    raise ValueError(
+                        f"Not enough credits. This purchase costs {format_credits(total)}; "
+                        f"your balance is {format_credits(balance)}."
+                    )
+                if not messagebox.askyesno(
+                    "Buy components",
+                    f"Buy {quantity} × {values[0]} for {format_credits(total)}?\n\n"
+                    f"Balance after purchase: {format_credits(balance - total)}.",
+                    parent=self,
+                ):
+                    return
             amount = self.refits.trade(key, quantity, buy)
             self.refresh()
             self.status.set(
@@ -767,6 +848,9 @@ class App(tk.Tk):
         frame = ttk.Frame(parent)
         frame.pack(fill="both", expand=True)
         tree = ttk.Treeview(frame, columns=columns, show="headings", height=height)
+        tree._heading_labels = dict(zip(columns, headings))
+        tree._sort_column = None
+        tree._sort_direction = -1
         for c, h, w in zip(columns, headings, widths):
             tree.heading(c, text=h)
             tree.column(c, width=w, minwidth=50)
@@ -775,6 +859,53 @@ class App(tk.Tk):
         tree.configure(yscrollcommand=scrollbar.set)
         tree.pack(side="left", fill="both", expand=True)
         return tree
+
+    def _enable_sorting(self, tree, refresh, numeric=()):
+        tree._sort_numeric = set(numeric)
+        for column in tree["columns"]:
+            tree.heading(column, command=lambda c=column: self._toggle_sort(tree, c, refresh))
+
+    def _toggle_sort(self, tree, column, refresh):
+        if tree._sort_column != column:
+            tree._sort_column = column
+            tree._sort_direction = -1
+        elif tree._sort_direction == -1:
+            tree._sort_direction = 1
+        else:
+            tree._sort_column = None
+            tree._sort_direction = -1
+        for name, label in tree._heading_labels.items():
+            suffix = ""
+            if name == tree._sort_column:
+                suffix = " ▼" if tree._sort_direction < 0 else " ▲"
+            tree.heading(name, text=label + suffix)
+        refresh()
+
+    @staticmethod
+    def _sort_value(value):
+        text = "" if value is None else str(value).strip()
+        cleaned = text.replace(",", "").replace("credits", "").replace("%", "").strip()
+        try:
+            return True, float(cleaned)
+        except ValueError:
+            return False, text.casefold()
+
+    def _sort_rows(self, rows, column_index, descending, numeric=False):
+        if not numeric:
+            return sorted(
+                rows,
+                key=lambda row: str(row[1][column_index] or "").casefold(),
+                reverse=descending,
+            )
+        values, missing = [], []
+        for row in rows:
+            is_numeric, key = self._sort_value(row[1][column_index])
+            if is_numeric:
+                values.append((key, row))
+            else:
+                missing.append(row)
+        values.sort(key=lambda item: item[0], reverse=descending)
+        return [row for _, row in values] + missing
 
     def guarded(self, action):
         try:
@@ -797,6 +928,7 @@ class App(tk.Tk):
         if f and f.ships:
             states = self.campaign.state.get("ship_state", {})
             ready = 0
+            rows = []
             for i, s in enumerate(f.ships):
                 key = s.findtext("Key", "")
                 item = states.get(key, {})
@@ -807,7 +939,28 @@ class App(tk.Tk):
                 if status == "ready":
                     ready += 1
                 label = "Lost" if status == "lost" else f"Damaged {condition:.0%}" if status == "damaged" else status.title()
-                self.ships.insert("", "end", iid=str(i), values=(s.findtext("Name"), s.findtext("HullType", "").replace("Stock/", ""), s.findtext("Number", ""), label, s.findtext("Cost")))
+                rows.append(
+                    (
+                        i,
+                        (
+                            s.findtext("Name"),
+                            s.findtext("HullType", "").replace("Stock/", ""),
+                            s.findtext("Number", ""),
+                            label,
+                            s.findtext("Cost"),
+                        ),
+                    )
+                )
+            if self.ships._sort_column:
+                index = tuple(self.ships["columns"]).index(self.ships._sort_column)
+                rows = self._sort_rows(
+                    rows,
+                    index,
+                    self.ships._sort_direction < 0,
+                    self.ships._sort_column in self.ships._sort_numeric,
+                )
+            for i, values in rows:
+                self.ships.insert("", "end", iid=str(i), values=values)
             suffix = "  /  deployment selection needed above ten" if len(f.ships) > 10 else ""
             self.fleet_info.configure(text=f"{f.name}  /  {f.faction.replace('Stock/', '')}  /  {len(f.ships)} owned hulls  /  {ready} ready  /  ~{f.points:,} points{suffix}")
             self.ships.selection_set(str(min(self.selected or 0, len(f.ships) - 1)))
@@ -1490,7 +1643,15 @@ class HullPurchaseDialog(tk.Toplevel):
             ttk.Label(form, text=label).grid(row=index, column=0, sticky="w", padx=(0, 14), pady=6)
             widget.grid(row=index, column=1, sticky="ew", pady=6)
 
-        self.hulls = self.app.tree(shell, ("name", "class", "points", "credits", "sockets"), ("HULL", "CLASS", "POINTS", "CREDITS", "SOCKETS"), (310, 170, 80, 130, 80), height=8)
+        filters = ttk.Frame(shell)
+        filters.pack(fill="x", pady=(0, 6))
+        ttk.Label(filters, text="Hull class").pack(side="left")
+        self.hull_class = tk.StringVar(value="All classes")
+        self.class_filter = ttk.Combobox(filters, textvariable=self.hull_class, state="readonly", width=24, values=("All classes",))
+        self.class_filter.pack(side="left", padx=(10, 0))
+        self.class_filter.bind("<<ComboboxSelected>>", lambda event: self._refresh_hulls())
+
+        self.hulls = self.app.tree(shell, ("name", "class", "points", "credits", "owned", "sockets"), ("HULL", "CLASS", "POINTS", "CREDITS", "OWNED", "SOCKETS"), (300, 150, 70, 115, 65, 70), height=8)
         self.hulls.bind("<<TreeviewSelect>>", self._select_hull)
         self.price = tk.StringVar(value="Select a hull to see its price.")
         ttk.Label(shell, textvariable=self.price, foreground=TEXT).pack(anchor="w", pady=(8, 0))
@@ -1543,26 +1704,54 @@ class HullPurchaseDialog(tk.Toplevel):
             self.message.set("The campaign faction is missing from the native fitting catalogue.")
             self.add_button.configure(state="disabled")
             return
-        self.hull_rows = sorted(faction.hulls, key=lambda h: (h.class_name.casefold(), h.name.casefold(), h.points))
+        all_hulls = sorted(faction.hulls, key=lambda h: (h.class_name.casefold(), h.name.casefold(), h.points))
+        classes = sorted({(hull.class_name or "Unclassified") for hull in all_hulls}, key=str.casefold)
+        options = ["All classes"] + classes
+        if tuple(options) != tuple(self.class_filter["values"]):
+            self.class_filter.configure(values=options)
+        if self.hull_class.get() not in options:
+            self.hull_class.set("All classes")
+        selected_class = self.hull_class.get()
+        self.hull_rows = [
+            hull
+            for hull in all_hulls
+            if selected_class == "All classes" or (hull.class_name or "Unclassified") == selected_class
+        ]
         try:
             prices = [self.app.economy.hull_price(hull.key, hull.points) for hull in self.hull_rows]
         except PriceError as exc:
             self.message.set(str(exc))
             self.add_button.configure(state="disabled")
             return
+        owned = {}
+        player = self.app.campaign.player
+        if player:
+            for ship in player.ships:
+                key = ship.findtext("HullType", "")
+                owned[key] = owned.get(key, 0) + 1
         for index, (hull, price) in enumerate(zip(self.hull_rows, prices)):
             self.hulls.insert(
                 "",
                 "end",
                 iid=str(index),
-                values=(hull.name, hull.class_name, hull.points, f"{price:,}", len(hull.sockets)),
+                values=(
+                    hull.name,
+                    hull.class_name,
+                    hull.points,
+                    f"{price:,}",
+                    owned.get(hull.key, 0),
+                    len(hull.sockets),
+                ),
             )
         if self.hull_rows:
             self.hulls.selection_set("0")
             self._select_hull()
         else:
             self.price.set("Select a hull to see its price.")
-            self.message.set("This faction has no usable hulls in the native catalogue.")
+            if selected_class == "All classes":
+                self.message.set("This faction has no usable hulls in the native catalogue.")
+            else:
+                self.message.set(f"No {selected_class} hulls are available for this campaign faction.")
             self.add_button.configure(state="disabled")
 
     def _select_hull(self, event=None, reset_fields=True):
@@ -1615,6 +1804,28 @@ class HullPurchaseDialog(tk.Toplevel):
         except (ValueError, IndexError) as exc:
             self.message.set(str(exc))
             messagebox.showerror("Buy hull", str(exc), parent=self)
+            return
+        try:
+            price = self.app.economy.hull_price(hull.key, hull.points)
+        except PriceError as exc:
+            self.message.set(str(exc))
+            messagebox.showerror("Buy hull", str(exc), parent=self)
+            return
+        balance = self.app.campaign.credits
+        if price > balance:
+            message = (
+                f"Not enough credits. This hull costs {format_credits(price)}; "
+                f"your balance is {format_credits(balance)}."
+            )
+            self.message.set(message)
+            messagebox.showerror("Buy hull", message, parent=self)
+            return
+        if not messagebox.askyesno(
+            "Buy hull",
+            f"Buy {name} ({hull.name}, hull number {number}) for {format_credits(price)}?\n\n"
+            f"Balance after purchase: {format_credits(balance - price)}.",
+            parent=self,
+        ):
             return
         self.busy = True
         self.add_button.configure(state="disabled")

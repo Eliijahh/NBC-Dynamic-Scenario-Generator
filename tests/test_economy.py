@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 from pathlib import Path
 import shutil
 import tempfile
@@ -66,6 +67,18 @@ class EconomyServiceTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_component_points_reload_after_bridge_export_changes(self):
+        self.assertEqual(self.economy.component_points("Stock/Test Radar"), 10)
+        path = self.c.exchange / "fitting-catalog.xml"
+        tree = ET.parse(path)
+        for component in tree.findall(".//Component"):
+            if component.findtext("Key") == "Stock/Test Radar":
+                component.find("Points").text = "25"
+        tree.write(path, encoding="utf-8", xml_declaration=True)
+        stamp = path.stat().st_mtime_ns
+        os.utime(path, ns=(stamp + 1_000_000, stamp + 1_000_000))
+        self.assertEqual(self.economy.component_points("Stock/Test Radar"), 25)
 
     def test_component_purchase_and_sale_change_wallet_and_ledger(self):
         total = self.economy.buy_component("Stock/Test Radar", 2)

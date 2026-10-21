@@ -157,6 +157,7 @@ class EconomyService:
         self.price_path = Path(price_path) if price_path is not None else DEFAULT_PRICE_FILE
         self._book = None
         self._catalog = None
+        self._catalog_stamp = None
         self._component_points = None
         self._hull_index = None
 
@@ -166,18 +167,23 @@ class EconomyService:
         return self._book
 
     def fitting_catalog(self, reload=False):
-        if self._catalog is not None and not reload:
-            return self._catalog
         path = self.campaign.exchange / "fitting-catalog.xml"
-        self._catalog = Catalog.load(path) if path.exists() else None
+        try:
+            stamp = path.stat().st_mtime_ns
+        except OSError:
+            stamp = None
+        if not reload and self._catalog is not None and stamp == self._catalog_stamp:
+            return self._catalog
+        self._catalog = Catalog.load(path) if stamp is not None else None
+        self._catalog_stamp = stamp
         self._component_points = None
         self._hull_index = None
         return self._catalog
 
     def _ensure_index(self):
+        catalog = self.fitting_catalog()
         if self._component_points is not None:
             return
-        catalog = self.fitting_catalog()
         self._component_points = {}
         self._hull_index = {}
         if catalog is None:
