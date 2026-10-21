@@ -801,8 +801,94 @@ class ExchangeTests(unittest.TestCase):
             },
         )
         self.assertEqual(ET.tostring(self.campaign.enemy.root), enemy_xml)
+        reasons = {
+            ship["name"]: ship["reason"]
+            for ship in self.campaign.state["battles"][0]["lost_ships"]
+        }
+        self.assertEqual(reasons, {"Reactor Lost": "reactor", "Destroyed": "destroyed"})
         restarted = Campaign(self.campaign.game, self.campaign.data)
         self.assertEqual({ship.findtext("Key") for ship in restarted.player.ships}, {survivor_key})
+
+    def test_destroyed_ship_is_removed_with_its_lost_components(self):
+        survivor = fitted_ship("Survivor", 1, ("reactor", "Stock/Test Reactor"))
+        doomed = fitted_ship(
+            "Doomed", 2, ("weapon", "Stock/Test Cannon"), ("reactor", "Stock/Test Reactor")
+        )
+        self.campaign.player = fleet_of(survivor, doomed)
+        self.campaign.state["inventory"] = {"Stock/Spare Part": 3}
+        battle = self.campaign.prepare()
+        self.install_catalog()
+        survivor_key = survivor.findtext("Key")
+        doomed_key = doomed.findtext("Key")
+        self.write_result(
+            battle,
+            [
+                (survivor_key, "Survivor", "Retired", "1"),
+                (doomed_key, "Doomed", "True", "0"),
+            ],
+        )
+        self.write_report(
+            battle,
+            {
+                "Survivor": [("reactor", 1.0, False)],
+                "Doomed": [("weapon", 0.0, True), ("reactor", 1.0, False)],
+            },
+        )
+
+        record = self.campaign.collect()
+
+        self.assertEqual({ship.findtext("Key") for ship in self.campaign.player.ships}, {survivor_key})
+        self.assertNotIn(doomed_key, self.campaign.state["owned_hulls"])
+        self.assertNotIn(doomed_key, self.campaign.state["ship_state"])
+        # The lost hull's installed components are gone; spares are untouched.
+        self.assertEqual(self.campaign.state["inventory"], {"Stock/Spare Part": 3})
+        self.assertEqual(
+            record["lost_ships"],
+            [
+                {
+                    "key": doomed_key,
+                    "name": "Doomed",
+                    "hull": "Stock/Raines Frigate",
+                    "reason": "destroyed",
+                    "components": [
+                        {"socket": "reactor", "component": "Stock/Test Reactor"},
+                        {"socket": "weapon", "component": "Stock/Test Cannon"},
+                    ],
+                }
+            ],
+        )
+        restarted = Campaign(self.campaign.game, self.campaign.data)
+        self.assertNotIn(doomed_key, restarted.state["owned_hulls"])
+        self.assertEqual({ship.findtext("Key") for ship in restarted.player.ships}, {survivor_key})
+        self.assertEqual(restarted.state["inventory"], {"Stock/Spare Part": 3})
+
+    def test_lost_ship_is_absent_from_a_later_deployment(self):
+        survivor = fitted_ship("Survivor", 1, ("reactor", "Stock/Test Reactor"))
+        doomed = fitted_ship("Doomed", 2, ("reactor", "Stock/Test Reactor"))
+        self.campaign.player = fleet_of(survivor, doomed)
+        battle = self.campaign.prepare()
+        self.install_catalog()
+        survivor_key = survivor.findtext("Key")
+        doomed_key = doomed.findtext("Key")
+        self.write_result(
+            battle,
+            [
+                (survivor_key, "Survivor", "Retired", "1"),
+                (doomed_key, "Doomed", "True", "1"),
+            ],
+        )
+        self.write_report(
+            battle,
+            {
+                "Survivor": [("reactor", 1.0, False)],
+                "Doomed": [("reactor", 1.0, False)],
+            },
+        )
+        self.campaign.collect()
+
+        second = self.campaign.prepare()
+        deployed = Fleet.load(Path(second["directory"]) / "player.fleet")
+        self.assertEqual({ship.findtext("Key") for ship in deployed.ships}, {survivor_key})
 
     def test_zero_hp_component_is_flagged_and_removed_only_when_scrapped(self):
         ship = fitted_ship(

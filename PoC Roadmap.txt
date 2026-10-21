@@ -202,11 +202,11 @@ price and the point value one next to another
 [x] Show damaged ships as unavailable on the deployment screen.
 
 4.3 Permanent loss
-[ ] A destroyed ship is removed from the roster permanently.
-[ ] Installed components on a destroyed ship are removed from owned inventory.
-[ ] Reconcile the roster and inventory in the same atomic save as the battle result.
-[ ] Show destroyed ships and lost components in the debrief.
-[ ] Ensure a lost ship cannot appear in a later mission.
+[x] A destroyed ship is removed from the roster permanently.
+[x] Installed components on a destroyed ship are removed from owned inventory.
+[x] Reconcile the roster and inventory in the same atomic save as the battle result.
+[x] Show destroyed ships and lost components in the debrief.
+[x] Ensure a lost ship cannot appear in a later mission.
 
 4.4 Scope limits
 [x] No maintenance system.

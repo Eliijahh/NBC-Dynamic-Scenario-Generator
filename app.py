@@ -323,6 +323,10 @@ class App(tk.Tk):
         self.history = self.tree(self.result_tab, ("time", "outcome", "duration", "id"), ("ENGAGEMENT", "OUTCOME", "SECONDS", "BATTLE ID"), (230, 140, 100, 330), height=5)
         self.history.bind("<<TreeviewSelect>>", self.select_result)
         self.results = self.tree(self.result_tab, ("side", "name", "status", "condition", "crew", "damage"), ("SIDE", "SHIP", "STATUS", "CONDITION", "CREW", "DAMAGE DEALT"), (90, 230, 140, 100, 100, 130), height=7)
+        ttk.Label(self.result_tab, text="Losses", style="Sub.TLabel").pack(anchor="w", pady=(16, 6))
+        self.losses = tk.StringVar(value="No ships lost in this engagement.")
+        self.losses_label = ttk.Label(self.result_tab, textvariable=self.losses, foreground=MUTED, wraplength=1050, justify="left")
+        self.losses_label.pack(anchor="w")
         ttk.Label(self.result_tab, text="Raw battle reports and input fleets are archived under data/battles/<battle ID>/.", style="Muted.TLabel").pack(anchor="w", pady=10)
 
     def _build_menu(self):
@@ -1431,6 +1435,38 @@ class App(tk.Tk):
             condition = s.get("Condition", "")
             display = f"{float(condition):.0%}" if condition else "—"
             self.results.insert("", "end", values=(s.get("Side"), s.get("Name"), s.get("Status"), display, f"{s.get('FinalCrew', '?')}/{s.get('OriginalCrew', '?')}", s.get("DamageDealt")))
+        self.show_losses(battle)
+
+    def show_losses(self, battle):
+        """List ships destroyed in the selected battle and the components lost with them."""
+        losses = battle.get("lost_ships")
+        if losses is None:
+            # Battles imported before loss tracking was added.
+            losses = [
+                {"name": s.get("Name"), "hull": "", "reason": "destroyed", "components": []}
+                for s in battle.get("ships", [])
+                if s.get("Side") == "Player"
+                and (s.get("Status") or "").strip().casefold() in {"destroyed", "true", "1", "eliminated"}
+            ]
+        if not losses:
+            self.losses.set("No ships lost in this engagement.")
+            self.losses_label.configure(foreground=MUTED)
+            return
+        lines = []
+        for ship in losses:
+            reason = "reactor detonation" if ship.get("reason") == "reactor" else "hull destroyed"
+            components = [
+                entry.get("component", "")
+                for entry in (ship.get("components") or [])
+                if entry.get("component")
+            ]
+            detail = ", ".join(components) if components else "no installed components"
+            lines.append(
+                f"{ship.get('name') or 'Unnamed hull'} "
+                f"({ship.get('hull') or 'unknown hull'}) — {reason}. Lost: {detail}"
+            )
+        self.losses.set("\n".join(lines))
+        self.losses_label.configure(foreground="#ef9b9b")
 
     def _release_lock(self):
         lock = getattr(self, "save_lock", None)

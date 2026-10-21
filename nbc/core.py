@@ -1207,6 +1207,7 @@ class Campaign:
         ship_state = copy.deepcopy(self.state.get("ship_state") or {})
         player = self.player.clone() if self.player else None
         lost = set()
+        lost_ships = []
         for key, item in updates.items():
             archived = next((s for s in roster.ships if s.findtext("Key") == key), None)
             sockets = {}
@@ -1232,9 +1233,24 @@ class Campaign:
             eliminated = (item.get("Status") or "").strip().casefold() in {"destroyed", "true", "1", "eliminated"}
             if eliminated or reactor_lost:
                 lost.add(key)
+                lost_ships.append(
+                    {
+                        "key": key,
+                        "name": item.get("Name")
+                        or (archived.findtext("Name", "") if archived is not None else ""),
+                        "hull": (archived.findtext("HullType", "") if archived is not None else ""),
+                        "reason": "destroyed" if eliminated else "reactor",
+                        "components": [
+                            {"socket": socket_key, "component": component}
+                            for socket_key, component in sorted(sockets.items())
+                            if component
+                        ],
+                    }
+                )
                 ship_state.pop(key, None)
                 continue
             ship_state[key] = ship_state_item(components)
+        record["lost_ships"] = lost_ships
         if player is not None:
             container = player.root.find("Ships")
             for ship in list(container.findall("Ship")):
