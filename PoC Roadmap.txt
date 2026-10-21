@@ -61,7 +61,7 @@ CURRENT BASELINE ALREADY IN THE PROJECT
     independent save directory.
 [x] Pending battle and accepted-mission sessions survive app restarts.
 [x] Automatic bridge acknowledgement and graceful game shutdown.
-[x] 150 Python tests passing.
+[x] 161 Python tests passing.
 [x] Generated three-ship fleet reached the native deployment screen without a
     point-cost discrepancy.
 [ ] Full generated-fleet battle played through completion and report imported.
@@ -348,24 +348,24 @@ price and the point value one next to another
 [x] Manual Install Bridge.ps1 copies the bridge files.
 [x] Runtime waits for the bridge and rejects versions below 0.5.0.
 [x] Real catalogue export verified against NEBULOUS 0.6.2.6.
-[ ] First-run installer logic that copies the bridge automatically.
-[ ] First-run game-path selection.
-[ ] Launch-time check for NEBULOUS installation.
-[ ] Launch-time check for bridge installation.
-[ ] Launch-time check for bridge version.
-[ ] Launch-time check for the fitted catalogue.
-[ ] Prompt to select the game path when it is missing.
-[ ] Prompt to install, update or repair the bridge.
-[ ] Show whether the bridge mod is enabled.
-[ ] Handle game updates that require a bridge rebuild.
-[ ] Bundle bridge files so users do not need the .NET SDK.
-[ ] Keep bridge installation idempotent.
-[ ] Verify write permissions before installing.
-[ ] Use a writable data location instead of the application directory.
-[ ] Package a portable executable.
+[x] First-run installer logic that copies the bridge automatically.
+[x] First-run game-path selection.
+[x] Launch-time check for NEBULOUS installation.
+[x] Launch-time check for bridge installation.
+[x] Launch-time check for bridge version.
+[x] Launch-time check for the fitted catalogue.
+[x] Prompt to select the game path when it is missing.
+[x] Prompt to install, update or repair the bridge.
+[x] Show whether the bridge mod is enabled.
+[~] Handle game updates that require a bridge rebuild.
+[x] Bundle bridge files so users do not need the .NET SDK.
+[x] Keep bridge installation idempotent.
+[x] Verify write permissions before installing.
+[x] Portable data folder next to the executable (user-selected), with config written beside it.
+[x] Package a portable executable.
 [ ] Publish the executable and bridge assets as GitHub Release assets.
-[ ] Update README installation and first-run instructions.
-[ ] Clean-install test on a machine without the project build outputs.
+[x] Update README installation and first-run instructions.
+[~] Clean-install test on a machine without the project build outputs.
 
 
 9. VALIDATION AND TESTS

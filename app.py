@@ -1,17 +1,20 @@
 """Run with Python 3.10+; uses only the Python standard library."""
 import copy
 import random
+import sys
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
 
-from nbc.core import Campaign, Fleet, DEFAULT_GAME, DEFAULT_STARTING_CREDITS, ROOT, discover, put, ship_damage_fraction
+from nbc import setup
+from nbc.core import Campaign, Fleet, DEFAULT_GAME, DEFAULT_STARTING_CREDITS, discover, put, ship_damage_fraction
 from nbc.economy import EconomyService, PriceError, format_credits
 from nbc.fitting import Catalog, CatalogError
 from nbc.generation import GenerationService
 from nbc.library import CampaignLibrary
 from nbc.missions import MissionService
 from nbc.refit import RefitService, installed
+from nbc.runtime import GameRuntime
 
 BG, PANEL, TEXT, MUTED, ACCENT = "#101820", "#182530", "#e4edf4", "#9aafbf", "#53d4b1"
 
@@ -85,14 +88,143 @@ class Tooltip:
             self.tip = None
 
 
+class SetupDialog(tk.Toplevel):
+    """First-run NEBULOUS connection: game path, bridge install and catalogue."""
+
+    def __init__(self, app, game_path, data_path):
+        super().__init__(app)
+        self.app = app
+        self.saved = False
+        self.game_path = Path(game_path)
+        self.data_path = Path(data_path)
+        self.title("NEBULOUS setup")
+        self.configure(bg=BG)
+        self.transient(app)
+        self.resizable(False, False)
+        frame = ttk.Frame(self, padding=22)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="SETUP", foreground=ACCENT, font=("Segoe UI Semibold", 10)).pack(anchor="w")
+        ttk.Label(frame, text="Connect NEBULOUS", style="Title.TLabel").pack(anchor="w", pady=(4, 3))
+        ttk.Label(
+            frame,
+            text=(
+                "Campaign Command installs its bridge into the game and enables it automatically. "
+                "Choose your NEBULOUS folder, then install."
+            ),
+            style="Muted.TLabel",
+            wraplength=600,
+        ).pack(anchor="w", pady=(0, 14))
+        row = ttk.Frame(frame)
+        row.pack(fill="x")
+        self.game_var = tk.StringVar(value=str(self.game_path))
+        ttk.Entry(row, textvariable=self.game_var, width=64).pack(
+            side="left", fill="x", expand=True, padx=(0, 8)
+        )
+        ttk.Button(row, text="Detect", command=self.detect).pack(side="left", padx=(0, 8))
+        ttk.Button(row, text="Browse…", command=self.browse).pack(side="left")
+        self.status_var = tk.StringVar(value="")
+        ttk.Label(
+            frame, textvariable=self.status_var, foreground=MUTED, wraplength=600, justify="left"
+        ).pack(anchor="w", pady=(12, 6))
+        self.message_var = tk.StringVar(value="")
+        ttk.Label(
+            frame, textvariable=self.message_var, foreground=ACCENT, wraplength=600, justify="left"
+        ).pack(anchor="w", pady=(0, 12))
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x", pady=(6, 0))
+        ttk.Button(buttons, text="Install / repair bridge", command=self.install).pack(
+            side="left", padx=(0, 8)
+        )
+        ttk.Button(buttons, text="Open NEBULOUS", command=self.open_game).pack(side="left", padx=(0, 8))
+        ttk.Button(buttons, text="Save and continue", command=self.save, style="Accent.TButton").pack(
+            side="right", padx=(8, 0)
+        )
+        ttk.Button(buttons, text="Skip for now", command=self.destroy).pack(side="right")
+        self.refresh()
+        self.grab_set()
+        self.update_idletasks()
+        self._center()
+
+    def _center(self):
+        width, height = self.winfo_width(), self.winfo_height()
+        x = max(0, (self.winfo_screenwidth() - width) // 2)
+        y = max(0, (self.winfo_screenheight() - height) // 2)
+        self.geometry(f"+{x}+{y}")
+
+    def refresh(self):
+        self.status_var.set(setup.status_text(setup.bridge_status(Path(self.game_var.get()))))
+
+    def detect(self):
+        found = setup.detect_game()
+        if not found:
+            self.message_var.set("NEBULOUS was not found in any Steam library. Use Browse…")
+            return
+        self.game_var.set(str(found))
+        self.message_var.set("Detected the NEBULOUS installation.")
+        self.refresh()
+
+    def browse(self):
+        chosen = filedialog.askdirectory(title="Select the NEBULOUS folder", parent=self)
+        if chosen:
+            self.game_var.set(chosen)
+            self.refresh()
+
+    def install(self):
+        game = Path(self.game_var.get())
+        try:
+            result = setup.install_bridge(game)
+            setup.enable_mod(game)
+        except Exception as exc:
+            self.message_var.set(str(exc))
+            messagebox.showerror("Bridge install", str(exc), parent=self)
+            return
+        self.message_var.set(
+            f"Bridge {result['version']} installed and enabled. Launch NEBULOUS once to export the catalogue."
+        )
+        self.refresh()
+
+    def open_game(self):
+        game = Path(self.game_var.get())
+        if not setup.valid_game(game):
+            self.message_var.set("Choose a valid NEBULOUS folder first.")
+            return
+        try:
+            GameRuntime(game, game / "Saves" / "NBCBridge").begin("catalog")
+        except Exception as exc:
+            self.message_var.set(str(exc))
+            return
+        self.message_var.set("Launching NEBULOUS. Return to its main menu to export the catalogue.")
+
+    def save(self):
+        game = Path(self.game_var.get())
+        if not setup.valid_game(game):
+            self.message_var.set("Choose a valid NEBULOUS folder first.")
+            return
+        try:
+            setup.install_bridge(game)
+            setup.enable_mod(game)
+            setup.save_config({"game_path": str(game), "data_path": str(self.data_path)})
+        except Exception as exc:
+            self.message_var.set(str(exc))
+            messagebox.showerror("Setup", str(exc), parent=self)
+            return
+        self.saved = True
+        self.game_path = game
+        self.destroy()
+
+
 class App(tk.Tk):
-    def __init__(self, game=DEFAULT_GAME, data=None):
+    def __init__(self, game=None, data=None):
         super().__init__()
         self.title("NEBULOUS · Campaign Command / Proof of Concept")
         self._center_window(1520, 960)
         self.configure(bg=BG)
-        self.library = CampaignLibrary(Path(data) if data else ROOT / "data")
-        self.campaign = self._startup_campaign(game)
+        self.game = Path(game) if game else (setup.resolve_game() or DEFAULT_GAME)
+        self.data_dir = Path(data) if data else setup.resolve_data()
+        if game is None and not setup.valid_game(self.game):
+            self._run_setup()
+        self.library = CampaignLibrary(self.data_dir)
+        self.campaign = self._startup_campaign(self.game)
         # Only one UI may mutate a given save; independent campaigns remain usable.
         try:
             self.save_lock = self._acquire_lock(self.campaign.data)
@@ -111,7 +243,7 @@ class App(tk.Tk):
         self.deployment_visible = False
         self.refit_visible = False
         self.economy = EconomyService(self.campaign)
-        self.templates = discover(game)
+        self.templates = discover(self.game)
         self.selected = None
         self.loading = False
         self.debug_unlocked = False
@@ -123,6 +255,25 @@ class App(tk.Tk):
         self.show_menu()
         self.protocol("WM_DELETE_WINDOW", self.close)
         self.after(1500, self.poll)
+
+    def _run_setup(self):
+        """First-run setup: find the game, install the bridge, then show the wizard."""
+        self.withdraw()
+        detected = setup.detect_game()
+        if detected:
+            try:
+                setup.install_bridge(detected)
+                setup.enable_mod(detected)
+                setup.save_config({"game_path": str(detected), "data_path": str(self.data_dir)})
+                self.game = detected
+            except Exception:
+                pass
+        dialog = SetupDialog(self, self.game, self.data_dir)
+        self.wait_window(dialog)
+        if dialog.saved:
+            self.game = dialog.game_path
+            self.data_dir = dialog.data_path
+        self.deiconify()
 
     def _center_window(self, preferred_width, preferred_height):
         """Open large enough for the Fleet controls, centered on the current screen."""
@@ -361,6 +512,14 @@ class App(tk.Tk):
         ttk.Label(center, text="NEBULOUS campaign proof of concept", style="Muted.TLabel").pack(anchor="center")
         self.menu_campaign_info = tk.StringVar(value="")
         ttk.Label(center, textvariable=self.menu_campaign_info, foreground=MUTED, wraplength=520).pack(anchor="center", pady=(18, 0))
+        self.menu_setup_info = tk.StringVar(value="")
+        ttk.Label(
+            center,
+            textvariable=self.menu_setup_info,
+            foreground=ACCENT,
+            wraplength=520,
+            justify="center",
+        ).pack(anchor="center", pady=(8, 0))
         buttons = ttk.Frame(center)
         buttons.pack(fill="x", pady=(24, 0))
         buttons.columnconfigure(0, weight=1)
@@ -398,6 +557,15 @@ class App(tk.Tk):
                 )
             else:
                 self.menu_campaign_info.set("No saved campaign detected.")
+        status = setup.bridge_status(self.game)
+        if not status["game_ok"]:
+            self.menu_setup_info.set("NEBULOUS not found. Open Settings → NEBULOUS SETUP to set the game folder.")
+        elif not status["enabled"]:
+            self.menu_setup_info.set("Bridge not enabled. Open Settings → NEBULOUS SETUP to install or repair it.")
+        elif not status["catalogue"]:
+            self.menu_setup_info.set("Launch NEBULOUS once so the bridge can export the fitting catalogue.")
+        else:
+            self.menu_setup_info.set("")
 
     def show_menu(self):
         self.settings_visible = False
@@ -528,6 +696,36 @@ class App(tk.Tk):
             wraplength=1100,
         ).pack(anchor="w", pady=(8, 0))
 
+        setup_panel = ttk.Frame(panel)
+        setup_panel.pack(fill="x", pady=(18, 0))
+        ttk.Separator(setup_panel, orient="horizontal").pack(fill="x", pady=(0, 14))
+        ttk.Label(
+            setup_panel,
+            text="NEBULOUS SETUP",
+            foreground=ACCENT,
+            font=("Segoe UI Semibold", 10),
+        ).pack(anchor="w")
+        self.setup_status = tk.StringVar(value="")
+        ttk.Label(
+            setup_panel,
+            textvariable=self.setup_status,
+            foreground=MUTED,
+            wraplength=1100,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 8))
+        setup_actions = ttk.Frame(setup_panel)
+        setup_actions.pack(fill="x")
+        ttk.Button(setup_actions, text="Detect game", command=self.detect_game_folder).pack(
+            side="left", padx=(0, 8)
+        )
+        ttk.Button(setup_actions, text="Change game folder…", command=self.change_game_folder).pack(
+            side="left", padx=(0, 8)
+        )
+        ttk.Button(setup_actions, text="Install / repair bridge", command=self.install_bridge_now).pack(
+            side="left", padx=(0, 8)
+        )
+        ttk.Button(setup_actions, text="Open NEBULOUS", command=self.open_game_now).pack(side="left")
+
         # Built hidden. SHIFT-X reveals this only while the settings screen is open.
         self.debug_section = ttk.Frame(panel)
         ttk.Separator(self.debug_section, orient="horizontal").pack(fill="x", pady=(0, 14))
@@ -565,13 +763,62 @@ class App(tk.Tk):
         meta = self.campaign.metadata
         if not meta:
             self.settings_campaign.set("No campaign is loaded.")
+        else:
+            faction = meta.get("faction", "").replace("Stock/", "")
+            ships = len(self.campaign.player.ships) if self.campaign.player else 0
+            self.settings_campaign.set(
+                f"{meta.get('name', 'Campaign')}  /  {meta.get('commander') or 'No commander'}  /  "
+                f"{faction}  /  {format_credits(int(meta.get('credits', 0)))}  /  {ships} ships"
+            )
+        if hasattr(self, "setup_status"):
+            self.setup_status.set(setup.status_text(setup.bridge_status(self.game)))
+
+    def detect_game_folder(self):
+        found = setup.detect_game()
+        if not found:
+            self.settings_message.set("NEBULOUS was not found in any Steam library. Use Change game folder…")
             return
-        faction = meta.get("faction", "").replace("Stock/", "")
-        ships = len(self.campaign.player.ships) if self.campaign.player else 0
-        self.settings_campaign.set(
-            f"{meta.get('name', 'Campaign')}  /  {meta.get('commander') or 'No commander'}  /  "
-            f"{faction}  /  {format_credits(int(meta.get('credits', 0)))}  /  {ships} ships"
+        self._apply_game_path(found)
+
+    def change_game_folder(self):
+        chosen = filedialog.askdirectory(title="Select the NEBULOUS folder", parent=self)
+        if chosen:
+            self._apply_game_path(Path(chosen))
+
+    def _apply_game_path(self, path):
+        if not setup.valid_game(path):
+            self.settings_message.set(f"{path} does not look like a NEBULOUS installation.")
+            return
+        self.game = Path(path)
+        config = setup.load_config()
+        config["game_path"] = str(self.game)
+        config["data_path"] = str(self.data_dir)
+        setup.save_config(config)
+        self.campaign.game = self.game
+        self.settings_message.set(f"Game folder set to {self.game}.")
+        self._refresh_settings()
+
+    def install_bridge_now(self):
+        try:
+            result = setup.install_bridge(self.game)
+            setup.enable_mod(self.game)
+        except Exception as exc:
+            self.settings_message.set(str(exc))
+            messagebox.showerror("Bridge install", str(exc), parent=self)
+            return
+        self.settings_message.set(
+            f"Bridge {result['version']} installed and enabled. Launch NEBULOUS once to export the catalogue."
         )
+        self._refresh_settings()
+
+    def open_game_now(self):
+        try:
+            self.campaign.runtime.begin("catalog")
+        except Exception as exc:
+            self.settings_message.set(str(exc))
+            messagebox.showerror("Open NEBULOUS", str(exc), parent=self)
+            return
+        self.settings_message.set("Launching NEBULOUS. Return to its main menu to export the catalogue.")
 
     def show_settings(self):
         self.settings_visible = True
@@ -3050,7 +3297,26 @@ class PriceDebugDialog(tk.Toplevel):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--game", type=Path, default=DEFAULT_GAME)
-    parser.add_argument("--data", type=Path)
+    parser.add_argument("--game", type=Path, default=None, help="Path to the NEBULOUS installation.")
+    parser.add_argument("--data", type=Path, default=None, help="Campaign data folder (defaults to a data folder next to the app).")
+    parser.add_argument("--selftest", type=Path, default=None, help="Write frozen-build diagnostics to this file and exit.")
     args = parser.parse_args()
+    if args.selftest:
+        import json
+
+        from nbc.core import ROOT as bundle_root
+
+        bridge_dir = setup.bundled_bridge_dir()
+        diagnostics = {
+            "frozen": getattr(sys, "frozen", False),
+            "bundle_root": str(bundle_root),
+            "prices_json": (bundle_root / "prices.json").is_file(),
+            "bridge_dir": str(bridge_dir),
+            "bridge_dll": (bridge_dir / "NBCBridge.dll").is_file(),
+            "game": str(setup.resolve_game() or ""),
+            "data": str(setup.resolve_data()),
+            "mod_id": setup.mod_id(),
+        }
+        args.selftest.write_text(json.dumps(diagnostics, indent=2), encoding="utf-8")
+        raise SystemExit(0)
     App(args.game, args.data).mainloop()

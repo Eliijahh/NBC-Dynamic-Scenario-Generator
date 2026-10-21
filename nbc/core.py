@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import random
 import shutil
+import sys
 import uuid
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -17,7 +18,8 @@ DEFAULT_GAME = Path(r"R:\SteamLibrary\steamapps\common\Nebulous")
 DEFAULT_STARTING_CREDITS = 100_000_000
 STATE_VERSION = 2
 CAMPAIGN_STATUSES = frozenset({"uninitialized", "active", "completed", "abandoned"})
-ROOT = Path(__file__).resolve().parent.parent
+# A frozen build extracts its data to a temporary bundle directory; source runs use the repo.
+ROOT = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
 ET.register_namespace("xsi", "http://www.w3.org/2001/XMLSchema-instance")
 ET.register_namespace("xsd", "http://www.w3.org/2001/XMLSchema")
 

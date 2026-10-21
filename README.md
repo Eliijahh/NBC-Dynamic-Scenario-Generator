@@ -61,6 +61,16 @@ The runtime patches use vendored **Harmony 2.3.3**, net472 merged assembly, from
 
 ## Run
 
+### Packaged release (recommended)
+
+1. Download **NBC-Campaign-Command.exe** from the GitHub Release and put it in a folder you can write to. It keeps `config.json` and its campaign saves in a `data/` folder next to the executable (portable).
+2. Run the exe. On first launch it finds NEBULOUS through Steam, copies its bundled bridge into `<game>\Mods\NBCBridge\`, and enables it in the game's active-mod list, then asks you to launch NEBULOUS once so the bridge can export the fitting catalogue.
+3. From then on, running the exe opens Campaign Command directly. **Settings → NEBULOUS SETUP** shows the game folder, bridge install/version, whether it is enabled and whether the catalogue is present, with **Detect game**, **Change game folder…**, **Install / repair bridge** and **Open NEBULOUS**.
+
+The exe bundles the bridge, so you do not need Python, the .NET SDK or the source. The build is not code-signed, so Windows SmartScreen may warn on first run (**More info → Run anyway**), and some antivirus tools flag PyInstaller one-file builds as a false positive.
+
+### From source (development)
+
 Requirements: Windows, Python 3.10+ with Tkinter, NEBULOUS: Fleet Command, and Steam. Building the bridge also requires a .NET SDK. The Python app has no third-party dependencies.
 
 1. Close NEBULOUS. In PowerShell, from this directory, run:
@@ -69,19 +79,25 @@ Requirements: Windows, Python 3.10+ with Tkinter, NEBULOUS: Fleet Command, and S
    & '.\Install Bridge.ps1' -GamePath 'R:\SteamLibrary\steamapps\common\Nebulous'
    ```
 
-2. Start NEBULOUS normally. Open **Mods**, enable **NBC Campaign Bridge**, apply the change, and return to the main menu. This is a one-time step. A running game must be restarted after updating the bridge DLL. Returning to the main menu is enough for the bridge to export the fitting catalogue.
-3. Double-click **Start Campaign.cmd**, or run `python app.py`. The app opens on the main menu with **Continue**, **New Campaign**, **Load Campaign** and **Exit**. **Continue** is shown only when the last-played campaign is valid. **New Campaign** creates an independent save under `data/campaigns/<id>/`, with its own fleet, inventory, credit wallet and ledger, battle history and pending operations. The existing `data/campaign.json` save remains available as the legacy **root** campaign. **Load Campaign** lists saved campaigns with commander, faction, credits, fleet size, last-played time and save status; select one and choose **Load Selected**. A campaign with a pending battle or refit must be finished or cancelled before another campaign can be loaded; an accepted mission does not block switching and is restored with its save. The open campaign is locked, and the lock moves with you when you switch saves.
-4. On **Fleet**, buy hulls from the native catalogue (credits are deducted), load an installed fleet or import a `.fleet` file. Rename hulls, change hull numbers or sell a hull for 10% of its value and return its installed components to inventory. The fleet list shows **Ready** or a weighted damage percentage for each hull: component damage is summed and spread across all installed components, so one of ten components at 90% damage reads as **9% Damaged**. The equipment list shows each damaged component's damage percentage and marks destroyed ones as **DESTROYED**. The repair panel shows the selected hull's damaged components and repair cost, with **Repair selected** and **Repair all** actions; destroyed components must be scrapped or refitted instead. Select an installed component and use **Scrap component** to discard it permanently without credits or a spare-parts return. Select one or more hulls and use **Refit selected → NEBULOUS** (or **Refit whole fleet → NEBULOUS** for up to ten hulls) to change equipment in the native editor. Original fleet files are preserved.
-5. **03 Missions** shows a generated batch of 5–10 offers. Select one to inspect its enemy hulls, points, reward, faction and expiry. **Accept mission** freezes that enemy snapshot and removes the offer from the pool, **Cancel accepted mission** returns it to the board without a reward, and **Regenerate offers** replaces the batch (disabled while a mission is accepted). A batch is generated automatically on campaign start and whenever the board is empty.
-6. Press **Start mission** to open the deployment screen. Select the ships to send (only ready ships can be chosen), then **Confirm deployment** to build the selected fleet and start NEBULOUS. Only the selected ships are exported to the skirmish, and only they receive battle results. **Back to mission** returns without launching. The native skirmish accepts at most 10 ships.
-7. When a battle ends, **Debrief** fills automatically. Return to the external app to view the outcome, mission result and payout, ship condition, casualties and damage statistics. A victory completes the mission and pays its reward once; a defeat or draw fails it with no payout, and the active mission is cleared. The app applies the report to the selected ships only: each installed component's damage percentage is stored, a ship becomes **Damaged** while any component is damaged or destroyed, ships lost with their reactor are removed, and components reduced to zero HP are flagged as destroyed. The **Losses** panel lists every destroyed ship, whether it was lost to a reactor detonation or an outright hull kill, and the components lost with it. The debrief's **Condition** column is the game's native whole-ship value. Destroyed components stay installed until you scrap or replace them. NEBULOUS closes automatically after the app validates and saves the report, and the app brings the Debrief forward.
-8. Use the gear at the top-right of the campaign header to open **Settings**. **Save now** forces a save and backs up the previous save, **Resume** returns to the previous tab, and **Save and exit** / **Exit without saving** close Campaign Command with or without a final save. The campaign still saves automatically as you play.
+2. Start NEBULOUS normally. Open **Mods**, enable **NBC Campaign Bridge**, apply the change, and return to the main menu. A running game must be restarted after updating the bridge DLL. Returning to the main menu is enough for the bridge to export the fitting catalogue.
+3. Double-click **Start Campaign.cmd**, or run `python app.py`. The app uses a `data/` folder next to the source tree; pass `--game` and `--data` to override the paths.
 
-To use another game location:
+### Building the release
 
 ```powershell
-python app.py --game 'D:\SteamLibrary\steamapps\common\Nebulous'
+& '.\scripts\Build Release.ps1'
 ```
+
+This builds the bridge and then produces `build/release/NBC-Campaign-Command.exe`, a portable one-file executable with the bridge and `prices.json` bundled. It needs the game installed on the build machine (for the bridge's game assemblies) and downloads PyInstaller into `.tools/venv-build`.
+
+## Playing a campaign
+
+1. The app opens on the main menu with **Continue**, **New Campaign**, **Load Campaign** and **Exit**. **Continue** is shown only when the last-played campaign is valid. **New Campaign** creates an independent save under `data/campaigns/<id>/`, with its own fleet, inventory, credit wallet and ledger, battle history and pending operations. The existing `data/campaign.json` save remains available as the legacy **root** campaign. **Load Campaign** lists saved campaigns with commander, faction, credits, fleet size, last-played time and save status; select one and choose **Load Selected**. A campaign with a pending battle or refit must be finished or cancelled before another campaign can be loaded; an accepted mission does not block switching and is restored with its save. The open campaign is locked, and the lock moves with you when you switch saves.
+2. On **Fleet**, buy hulls from the native catalogue (credits are deducted), load an installed fleet or import a `.fleet` file. Rename hulls, change hull numbers or sell a hull for 10% of its value and return its installed components to inventory. The fleet list shows **Ready** or a weighted damage percentage for each hull: component damage is summed and spread across all installed components, so one of ten components at 90% damage reads as **9% Damaged**. The equipment list shows each damaged component's damage percentage and marks destroyed ones as **DESTROYED**. The repair panel shows the selected hull's damaged components and repair cost, with **Repair selected** and **Repair all** actions; destroyed components must be scrapped or refitted instead. Select an installed component and use **Scrap component** to discard it permanently without credits or a spare-parts return. Select one or more hulls and use **Refit selected → NEBULOUS** (or **Refit whole fleet → NEBULOUS** for up to ten hulls) to change equipment in the native editor. Original fleet files are preserved.
+3. **03 Missions** shows a generated batch of 5–10 offers. Select one to inspect its enemy hulls, points, reward, faction and expiry. **Accept mission** freezes that enemy snapshot and removes the offer from the pool, **Cancel accepted mission** returns it to the board without a reward, and **Regenerate offers** replaces the batch (disabled while a mission is accepted). A batch is generated automatically on campaign start and whenever the board is empty.
+4. Press **Start mission** to open the deployment screen. Select the ships to send (only ready ships can be chosen), then **Confirm deployment** to build the selected fleet and start NEBULOUS. Only the selected ships are exported to the skirmish, and only they receive battle results. **Back to mission** returns without launching. The native skirmish accepts at most 10 ships.
+5. When a battle ends, **Debrief** fills automatically. Return to the external app to view the outcome, mission result and payout, ship condition, casualties and damage statistics. A victory completes the mission and pays its reward once; a defeat or draw fails it with no payout, and the active mission is cleared. The app applies the report to the selected ships only: each installed component's damage percentage is stored, a ship becomes **Damaged** while any component is damaged or destroyed, ships lost with their reactor are removed, and components reduced to zero HP are flagged as destroyed. The **Losses** panel lists every destroyed ship, whether it was lost to a reactor detonation or an outright hull kill, and the components lost with it. The debrief's **Condition** column is the game's native whole-ship value. Destroyed components stay installed until you scrap or replace them. NEBULOUS closes automatically after the app validates and saves the report, and the app brings the Debrief forward.
+6. Use the gear at the top-right of the campaign header to open **Settings**. **Save now** forces a save and backs up the previous save, **Resume** returns to the previous tab, and **Save and exit** / **Exit without saving** close Campaign Command with or without a final save. The campaign still saves automatically as you play.
 
 ## Scope of this prototype
 
@@ -115,6 +131,7 @@ nbc/generation.py            Candidate selection and enemy persistence
 nbc/missions.py              Mission offers, difficulty, rewards and lifecycle
 nbc/refit.py                 Inventory, draft validation and atomic refit confirmation
 nbc/runtime.py               Nonblocking startup, process identity and export acknowledgements
+nbc/setup.py                 Portable config, Steam detection and automatic bridge install
 bridge/NBCBridge.cs          Code-only IModEntryPoint mod
 bridge/FittingCatalog.cs     Full stock fitting catalogue exporter
 bridge/RefitBridge.cs        Scoped native editor hooks and refit exchange
@@ -122,6 +139,7 @@ bridge/LifecycleBridge.cs    Live heartbeat and acknowledged graceful shutdown
 bridge/lib/                  Pinned Harmony library and MIT license
 bridge/ModInfo.xml           Local mod manifest
 scripts/Build Bridge.ps1     Compile against installed game libraries
+scripts/Build Release.ps1    Package the portable one-file executable with the bridge bundled
 Install Bridge.ps1          Install only this mod's files
 data/player.fleet           Legacy root campaign's working player fleet (ignored by Git)
 data/enemy.fleet            Legacy root campaign's generated enemy (ignored by Git)
@@ -179,8 +197,9 @@ The bridge writes the draft/report before its completion marker. The app validat
 ```powershell
 python -m unittest discover -s tests -v
 & '.\scripts\Build Bridge.ps1'
+& '.\scripts\Build Release.ps1'
 ```
 
-Tests cover XML preservation, ship identities, compatible/incompatible edits, socket fitting, catalogue parsing, ammunition loading, EWar role classification, deterministic offline generation, budget selection, campaign discovery, last-played tracking, corrupt-save reporting, credit formulas and overrides, wallet and ledger accounting, per-component repair quotes, selected/all repair charging and rollback, manual component scrapping, damaged-ship deployment blocking, atomic purchase/sale rollback, battle locking, cancellation, result matching, duplicate import prevention, per-component damage persistence, ship-state migration, reactor-loss removal, destroyed-component scrapping, atomic battle-import rollback, mission list generation, mission persistence across restart, accept/cancel/reroll rules, background mission generation, deployment selection, selected-fleet export and scoped report import, mission resolution and payout, and round-trips of installed fleet files when available. Live game validation is a separate check; these tests use a synthetic fitting catalogue and, when present, the locally exported real catalogue. They do not simulate the Unity engine.
+Tests cover XML preservation, ship identities, compatible/incompatible edits, socket fitting, catalogue parsing, ammunition loading, EWar role classification, deterministic offline generation, budget selection, campaign discovery, last-played tracking, corrupt-save reporting, credit formulas and overrides, wallet and ledger accounting, per-component repair quotes, selected/all repair charging and rollback, manual component scrapping, damaged-ship deployment blocking, atomic purchase/sale rollback, battle locking, cancellation, result matching, duplicate import prevention, per-component damage persistence, ship-state migration, reactor-loss removal, destroyed-component scrapping, atomic battle-import rollback, mission list generation, mission persistence across restart, accept/cancel/reroll rules, background mission generation, deployment selection, selected-fleet export and scoped report import, mission resolution and payout, portable config and automatic bridge installation, and round-trips of installed fleet files when available. Live game validation is a separate check; these tests use a synthetic fitting catalogue and, when present, the locally exported real catalogue. They do not simulate the Unity engine.
 
 Earlier live validation on 16 October 2026 against NEBULOUS 0.6.2.6 confirmed the battle handoff and native report import with matching ship GUIDs; it did not verify damage carryover or a full combat engagement. On 20 October 2026, bridge 0.5 exported the real fitting catalogue, and a generated three-ship 3,000-point fleet loaded through the normal battle handoff and reached deployment against a current starter fleet without a point-cost discrepancy. The test was closed at deployment, so a completed generated-fleet battle is still a manual check.
