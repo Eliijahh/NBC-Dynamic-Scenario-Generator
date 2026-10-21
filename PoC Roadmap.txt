@@ -113,22 +113,24 @@ CURRENT BASELINE ALREADY IN THE PROJECT
 ----------------------
 [x] Separate credits table decided.
 [x] Initial price scale agreed.
-[ ] Credits wallet stored in the campaign save.
-[ ] Integer-only credit amounts and consistent formatting.
-[ ] Transaction ledger or audit trail for credits.
-[ ] Atomic money changes: purchase, repair and reward either fully apply or not.
-[ ] Guard against negative credits.
-[ ] Price data file separate from native point costs.
-[ ] Per-item override support in the price table.
-[ ] Baseline formula that derives credits from native point costs.
-[ ] Price every hull in the catalogue.
-[ ] Price every component in the catalogue.
-[ ] Fallback price for catalogue items added by a game update.
-[ ] Validate that no hull or component is missing a price.
-[ ] Purchases decrease player's money.
-[ ] Ammunition does not cost credits for PoC
-[ ] Selling returns 10% of hull or component value
-[ ] Optional price-debug view showing native points and credits side by side added in debug view when the player uses SHIFT-X while in the settings screen, debug section appears and one of the buttons opens a screen showing two tabs "Hulls" and "Components" which then show the 
+[x] Credits wallet stored in the campaign save.
+[x] Integer-only credit amounts and consistent formatting.
+[x] Transaction ledger or audit trail for credits.
+[x] Atomic money changes for purchasing and selling.
+[ ] Atomic money changes for repair.
+[ ] Atomic money changes for rewards.
+[x] Guard against negative credits.
+[x] Price data file separate from native point costs.
+[x] Per-item override support in the price table.
+[x] Baseline formula that derives credits from native point costs.
+[x] Price every hull in the catalogue.
+[x] Price every component in the catalogue.
+[x] Fallback price for catalogue items added by a game update.
+[x] Validate that no hull or component is missing a price.
+[x] Purchases decrease player's money.
+[x] Ammunition does not cost credits for PoC
+[x] Selling returns 10% of hull or component value
+[x] Optional price-debug view showing native points and credits side by side added in debug view when the player uses SHIFT-X while in the settings screen, debug section appears and one of the buttons opens a screen showing two tabs "Hulls" and "Components" which then show the 
 price and the point value one next to another
 
 
@@ -156,11 +158,11 @@ price and the point value one next to another
 [x] Ability to sell a hull which removes all components and put them into the inventory
 
 3.3 Component ownership
-[ ] Buy components with credits.
-[ ] Sell components for credits, if selling is kept in scope.
-[ ] Show owned quantity and cost in the store.
-[ ] Show whether the player can afford the selected quantity.
-[ ] Add purchased components to spare inventory atomically with the credit debit.
+[x] Buy components with credits.
+[x] Sell components for credits, if selling is kept in scope.
+[x] Show owned quantity and cost in the store.
+[x] Show whether the player can afford the selected quantity.
+[x] Add purchased components to spare inventory atomically with the credit debit.
 
 3.4 Store / shipyard
 [ ] Purchase screen for hulls and components.

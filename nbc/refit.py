@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 import uuid
 
 from .core import Fleet, now, put, read_xml, write_xml
+from .economy import EconomyService
 
 
 def installed(fleet):
@@ -70,20 +71,10 @@ class RefitService:
 
     def trade(self, key, quantity, buy=True):
         self.ensure_idle()
-        if type(quantity) is not int or not 1 <= quantity <= 999:
-            raise ValueError("Choose a quantity from 1 to 999.")
-        inventory = dict(self.c.state["inventory"])
-        if buy and key not in self.catalog():
-            raise ValueError("Component is not in the game-exported catalogue. Start NEBULOUS with the updated bridge first.")
-        count = inventory.get(key, 0) + (quantity if buy else -quantity)
-        if count < 0:
-            raise ValueError("Only spare equipment can be sold; not enough units available.")
-        if count:
-            inventory[key] = count
-        else:
-            inventory.pop(key, None)
-        with self.c.transaction():
-            self.c.state["inventory"] = inventory
+        economy = EconomyService(self.c)
+        if buy:
+            return economy.buy_component(key, quantity)
+        return economy.sell_component(key, quantity)
 
     def start(self, launch=True, ship_keys=None):
         self.ensure_idle()

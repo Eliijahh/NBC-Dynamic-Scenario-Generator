@@ -220,6 +220,7 @@ class CampaignSetupTests(unittest.TestCase):
                     "accepted_mission": None,
                     "active_battle": None,
                     "inventory": {},
+                    "credit_ledger": [],
                     "active_refit": None,
                     "refits": [],
                 }
@@ -297,6 +298,7 @@ class CampaignSetupTests(unittest.TestCase):
 
         self.assertEqual(campaign.state["version"], STATE_VERSION)
         self.assertEqual(campaign.credits, 42)
+        self.assertEqual(campaign.credit_ledger, [])
         self.assertEqual(campaign.state["mission_offers"], [])
         backups = list((data / "campaign-backups").iterdir())
         self.assertEqual(len(backups), 1)

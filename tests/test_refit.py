@@ -17,9 +17,10 @@ class RefitTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
         self.c = Campaign(root / "game", root / "data")
-        self.c.player = sample()
-        self.c.player.duplicate(0)
-        self.c.player.duplicate(0)
+        starter = sample()
+        starter.duplicate(0)
+        starter.duplicate(0)
+        self.c.start_new_campaign("Refit Tests", "Cmdr Vale", "Stock/Alliance", 1_000_000, starter)
         self.service = RefitService(self.c)
         catalog = ET.fromstring("<ComponentCatalog><Component><Key>Stock/Radar</Key><Name>Radar</Name><Type>Module</Type></Component></ComponentCatalog>")
         write_xml(self.c.exchange / "catalog.xml", catalog)
@@ -40,12 +41,14 @@ class RefitTests(unittest.TestCase):
         put(marker, "Hash", hashlib.sha256(path.read_bytes()).hexdigest())
         write_xml(folder / f"ready-{revision}.xml", marker)
 
-    def test_buy_sell_and_restart_without_currency(self):
+    def test_buy_sell_and_restart_debit_and_credit_wallet(self):
         self.service.trade("Stock/Radar", 2)
         self.service.trade("Stock/Radar", 1, buy=False)
         restarted = Campaign(self.c.game, self.c.data)
         self.assertEqual(restarted.state["inventory"], {"Stock/Radar": 1})
         self.assertNotIn("credits", restarted.state)
+        self.assertEqual(restarted.credits, 990_500)
+        self.assertEqual(restarted.credit_ledger[-1]["balance"], 990_500)
         with self.assertRaises(ValueError):
             self.service.trade("Stock/Radar", 2, buy=False)
         with self.assertRaises(ValueError):

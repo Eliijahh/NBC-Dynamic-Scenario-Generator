@@ -274,6 +274,7 @@ class Campaign:
             "accepted_mission": None,
             "active_battle": None,
             "inventory": {},
+            "credit_ledger": [],
             "active_refit": None,
             "refits": [],
         }
@@ -300,9 +301,16 @@ class Campaign:
             if not isinstance(record, dict) or not isinstance(record.get("ship", ""), str):
                 raise ValueError("Each owned hull must contain its ship XML.")
             uuid.UUID(str(key))
-        for key in ("battles", "mission_offers", "refits"):
+        for key in ("battles", "mission_offers", "refits", "credit_ledger"):
             if not isinstance(state[key], list):
                 raise ValueError(f"Campaign {key} must be a list.")
+        for entry in state["credit_ledger"]:
+            if not isinstance(entry, dict):
+                raise ValueError("Campaign credit ledger entries must be objects.")
+            if type(entry.get("amount")) is not int or type(entry.get("balance")) is not int:
+                raise ValueError("Campaign credit ledger amounts must be whole numbers.")
+            if entry["balance"] < 0:
+                raise ValueError("Campaign credit ledger balance cannot be negative.")
         for key in ("active_battle", "active_refit", "accepted_mission"):
             if state[key] is not None and not isinstance(state[key], dict):
                 raise ValueError(f"Campaign {key} must be an object or null.")
@@ -359,11 +367,12 @@ class Campaign:
         player.validate(max_ships=None, allow_empty=True)
         return player
 
-    def sync_owned_hulls(self, fleet=None, sources=None):
+    def sync_owned_hulls(self, fleet=None, sources=None, prices=None):
         """Mirror the current roster into the owned-hull records with stable IDs."""
         fleet = self.player if fleet is None else fleet
         previous = self.state.get("owned_hulls") or {}
         sources = sources or {}
+        prices = prices or {}
         current = {}
         for ship in fleet.ships if fleet else ():
             key = ship.findtext("Key")
@@ -382,7 +391,7 @@ class Campaign:
                     "ship": ET.tostring(ship, encoding="unicode"),
                     "acquired": record.get("acquired") or now(),
                     "source": sources.get(key, record.get("source", "roster")),
-                    "price": record.get("price", 0),
+                    "price": prices.get(key, record.get("price", 0)),
                 }
             )
             current[key] = record
@@ -391,7 +400,9 @@ class Campaign:
             return True
         return False
 
-    def _commit_player(self, player, inventory=None, sources=None):
+    def _commit_player(self, player, inventory=None, sources=None, prices=None,
+                       credit_delta=0, ledger_kind="adjustment", ledger_description="",
+                       ledger_details=None):
         """Replace the roster and persist state as one rollback-safe change."""
         before = copy.deepcopy(self.state)
         previous = self.player
@@ -399,7 +410,14 @@ class Campaign:
         if inventory is not None:
             self.state["inventory"] = inventory
         try:
-            self.save_fleets(sources=sources)
+            if credit_delta:
+                self.adjust_credits(
+                    credit_delta,
+                    ledger_kind,
+                    ledger_description or ledger_kind.replace("-", " ").title(),
+                    ledger_details,
+                )
+            self.save_fleets(sources=sources, prices=prices)
         except Exception:
             self.state = before
             self.player = previous
@@ -426,6 +444,10 @@ class Campaign:
     @property
     def campaign_status(self):
         return self.state.get("campaign_status", "uninitialized")
+
+    @property
+    def credit_ledger(self):
+        return list(self.state.get("credit_ledger") or [])
 
     @property
     def accepted_mission(self):
@@ -472,13 +494,50 @@ class Campaign:
         with self.transaction():
             self.state["campaign"]["last_played"] = now()
 
+    def _append_credit_entry(self, amount, kind, description, details=None):
+        self.state.setdefault("credit_ledger", []).append(
+            {
+                "id": str(uuid.uuid4()),
+                "at": now(),
+                "amount": int(amount),
+                "balance": self.credits,
+                "kind": str(kind),
+                "description": str(description),
+                "details": copy.deepcopy(details or {}),
+            }
+        )
+
+    def adjust_credits(self, amount, kind, description, details=None):
+        """Apply one integer wallet change and append it to the audit trail."""
+        if type(amount) is not int:
+            raise ValueError("Credit changes must be whole numbers.")
+        if not self.has_campaign:
+            raise ValueError("No campaign is loaded.")
+        balance = self.credits + amount
+        if balance < 0:
+            raise ValueError(
+                f"Not enough credits. This costs {abs(amount):,} credits; "
+                f"your balance is {self.credits:,}."
+            )
+        self.state["campaign"]["credits"] = balance
+        self._append_credit_entry(amount, kind, description, details)
+        return balance
+
     def set_credits(self, credits):
         if type(credits) is not int or credits < 0:
             raise ValueError("Credits must be a non-negative whole number.")
         if not self.has_campaign:
             raise ValueError("No campaign is loaded.")
+        previous = self.credits
+        delta = credits - previous
         with self.transaction():
-            self.state["campaign"]["credits"] = credits
+            if delta:
+                self.adjust_credits(
+                    delta,
+                    "adjustment",
+                    "Credits set directly",
+                    {"previous": previous, "new": credits},
+                )
 
     def set_campaign_status(self, status):
         if status not in CAMPAIGN_STATUSES:
@@ -550,13 +609,18 @@ class Campaign:
         """The game still accepts at most ten ships in one exported fleet."""
         return bool(self.player and 1 <= len(self.player.ships) <= 10)
 
-    def add_owned_hull(self, faction, ship, name=None, number=None, source="purchase"):
+    def add_owned_hull(self, faction, ship, name=None, number=None, source="purchase",
+                       price=0, debit=0, ledger_description=None, ledger_details=None):
         """Add an empty, uniquely identified hull to the campaign roster."""
         self.ensure_idle()
         if not self.has_campaign:
             raise ValueError("Create or load a campaign first.")
         if faction != self.metadata.get("faction"):
             raise ValueError("Hulls must match the campaign faction.")
+        if type(price) is not int or price < 0:
+            raise ValueError("Hull price must be a non-negative whole number.")
+        if type(debit) is not int or debit < 0:
+            raise ValueError("Hull charge must be a non-negative whole number.")
         ship = copy.deepcopy(ship)
         key = ship.findtext("Key") or str(uuid.uuid4())
         try:
@@ -597,7 +661,15 @@ class Campaign:
         player = self.player.clone() if self.player else Fleet(self._new_roster_root())
         player.root.find("Ships").append(ship)
         player.validate(max_ships=None)
-        self._commit_player(player, sources={key: source})
+        self._commit_player(
+            player,
+            sources={key: source},
+            prices={key: price},
+            credit_delta=-debit,
+            ledger_kind="hull-purchase",
+            ledger_description=ledger_description or f"Bought hull {name}",
+            ledger_details=ledger_details or {"hull": ship.findtext("HullType", ""), "ship": key},
+        )
         return key
 
     def rename_owned_hull(self, key, name, number):
@@ -627,15 +699,19 @@ class Campaign:
         player.validate(max_ships=None, allow_empty=True)
         self._commit_player(player)
 
-    def sell_owned_hull(self, key):
+    def sell_owned_hull(self, key, refund=0, ledger_description=None, ledger_details=None):
         """Remove a hull, returning its installed components to spare inventory."""
         self.ensure_idle()
         if not self.player:
             raise ValueError("No campaign roster is loaded.")
+        if type(refund) is not int or refund < 0:
+            raise ValueError("Hull refund must be a non-negative whole number.")
         player = self.player.clone()
         ship = next((s for s in player.ships if s.findtext("Key") == key), None)
         if ship is None:
             raise ValueError("That hull is not in the campaign roster.")
+        name = ship.findtext("Name", "")
+        hull = ship.findtext("HullType", "")
         returned = {}
         for socket in ship.findall("SocketMap/HullSocket"):
             component = socket.findtext("ComponentName", "").strip()
@@ -646,7 +722,14 @@ class Campaign:
         inventory = dict(self.state.get("inventory") or {})
         for component, count in returned.items():
             inventory[component] = inventory.get(component, 0) + count
-        self._commit_player(player, inventory=inventory)
+        self._commit_player(
+            player,
+            inventory=inventory,
+            credit_delta=refund,
+            ledger_kind="hull-sale",
+            ledger_description=ledger_description or f"Sold hull {name}",
+            ledger_details=ledger_details or {"hull": hull, "ship": key},
+        )
         return returned
 
     def backup_campaign(self, reason="new-campaign"):
@@ -714,6 +797,13 @@ class Campaign:
         self.state["campaign_status"] = "active"
         self.player = starter
         self.enemy = None
+        if credits:
+            self._append_credit_entry(
+                credits,
+                "campaign-start",
+                "Starting credits",
+                {"campaign": name},
+            )
         try:
             enemy_path = self.data / "enemy.fleet"
             if enemy_path.exists():
@@ -724,13 +814,13 @@ class Campaign:
             raise
         return self.metadata
 
-    def save_fleets(self, sources=None):
+    def save_fleets(self, sources=None, prices=None):
         if self.player:
             self.player.validate(max_ships=None, allow_empty=True)
         if self.enemy:
             self.enemy.validate()
         if self.player:
-            self.sync_owned_hulls(sources=sources)
+            self.sync_owned_hulls(sources=sources, prices=prices)
             self.state["player_xml"] = ET.tostring(self.player.root, encoding="unicode")
         else:
             self.state["owned_hulls"] = {}

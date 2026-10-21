@@ -6,7 +6,8 @@ from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
 
 from nbc.core import Campaign, Fleet, DEFAULT_GAME, DEFAULT_STARTING_CREDITS, ROOT, discover, put
-from nbc.fitting import Catalog, CatalogError, empty_ship
+from nbc.economy import EconomyService, PriceError, format_credits
+from nbc.fitting import Catalog, CatalogError
 from nbc.generation import GenerationService
 from nbc.library import CampaignLibrary
 from nbc.refit import RefitService, installed
@@ -93,11 +94,15 @@ class App(tk.Tk):
             raise SystemExit(1)
         self.refits = RefitService(self.campaign)
         self.generation = GenerationService(self.campaign)
+        self.economy = EconomyService(self.campaign)
         self.templates = discover(game)
         self.selected = None
         self.loading = False
+        self.debug_unlocked = False
+        self.settings_visible = False
         self._style()
         self._build()
+        self.bind_all("<Shift-X>", self._reveal_debug)
         self.refresh()
         self.show_menu()
         self.protocol("WM_DELETE_WINDOW", self.close)
@@ -151,6 +156,7 @@ class App(tk.Tk):
         self.save_lock = new_lock
         self.refits = RefitService(self.campaign)
         self.generation = GenerationService(self.campaign)
+        self.economy = EconomyService(self.campaign)
         if old_lock is not None:
             old_lock.close()
         self.library.set_last(campaign_id)
@@ -325,7 +331,7 @@ class App(tk.Tk):
             self.menu_campaign_info.set(
                 f"Continue: {meta.get('name', 'Campaign')}  /  "
                 f"{meta.get('commander') or 'No commander'}  /  "
-                f"{int(meta.get('credits', 0)):,} credits"
+                f"{format_credits(int(meta.get('credits', 0)))}"
             )
         else:
             self.continue_button.grid_remove()
@@ -343,11 +349,13 @@ class App(tk.Tk):
                 self.menu_campaign_info.set("No saved campaign detected.")
 
     def show_menu(self):
+        self.settings_visible = False
         self.main.pack_forget()
         self.menu.pack(fill="both", expand=True)
         self._refresh_menu()
 
     def show_main(self):
+        self.settings_visible = False
         self.menu.pack_forget()
         self.settings_screen.pack_forget()
         self.tabs.pack(fill="both", expand=True)
@@ -453,7 +461,39 @@ class App(tk.Tk):
             style="Muted.TLabel",
             wraplength=1100,
         ).pack(anchor="w", pady=(8, 0))
+
+        # Built hidden. SHIFT-X reveals this only while the settings screen is open.
+        self.debug_section = ttk.Frame(panel)
+        ttk.Separator(self.debug_section, orient="horizontal").pack(fill="x", pady=(0, 14))
+        ttk.Label(
+            self.debug_section,
+            text="DEBUG",
+            foreground=ACCENT,
+            font=("Segoe UI Semibold", 10),
+        ).pack(anchor="w")
+        ttk.Label(
+            self.debug_section,
+            text="Developer tools unlocked with SHIFT-X.",
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(2, 8))
+        ttk.Button(
+            self.debug_section,
+            text="Open price debug (Hulls / Components)",
+            command=self.open_price_debug,
+        ).pack(anchor="w")
         self._refresh_settings()
+
+    def _reveal_debug(self, event=None):
+        if not self.settings_visible:
+            return
+        if self.debug_unlocked:
+            return
+        self.debug_unlocked = True
+        self.debug_section.pack(fill="x", pady=(18, 0))
+        self.settings_message.set("Debug tools revealed. Compare native points with credits in the price debug screen.")
+
+    def open_price_debug(self):
+        self.guarded(lambda: PriceDebugDialog(self))
 
     def _refresh_settings(self):
         meta = self.campaign.metadata
@@ -464,16 +504,18 @@ class App(tk.Tk):
         ships = len(self.campaign.player.ships) if self.campaign.player else 0
         self.settings_campaign.set(
             f"{meta.get('name', 'Campaign')}  /  {meta.get('commander') or 'No commander'}  /  "
-            f"{faction}  /  {int(meta.get('credits', 0)):,} credits  /  {ships} ships"
+            f"{faction}  /  {format_credits(int(meta.get('credits', 0)))}  /  {ships} ships"
         )
 
     def show_settings(self):
+        self.settings_visible = True
         self.tabs.pack_forget()
         self.settings_screen.pack(fill="both", expand=True)
         self._refresh_settings()
         self.status.set("Campaign settings.")
 
     def resume_campaign(self):
+        self.settings_visible = False
         self.settings_screen.pack_forget()
         self.tabs.pack(fill="both", expand=True)
         self.status.set("Resumed campaign.")
@@ -508,7 +550,7 @@ class App(tk.Tk):
         self.tabs.insert(1, self.inventory_tab, text="02  Inventory")
         self.tabs.insert(2, self.refit_tab, text="03  Refit")
         ttk.Label(self.inventory_tab, text="Equipment store & spare inventory", style="Sub.TLabel").pack(anchor="w")
-        ttk.Label(self.inventory_tab, text="Unlimited store stock • No money • Buy adds spares; sell removes spares. Installed equipment stays on its ship.", style="Muted.TLabel", wraplength=1100).pack(anchor="w", pady=8)
+        ttk.Label(self.inventory_tab, text="Unlimited store stock • Purchases debit credits; selling spare equipment returns 10%. Ammunition is free for the PoC.", style="Muted.TLabel", wraplength=1100).pack(anchor="w", pady=8)
         controls = ttk.Frame(self.inventory_tab)
         controls.pack(fill="x", pady=8)
         self.catalog_search = tk.StringVar()
@@ -527,7 +569,7 @@ class App(tk.Tk):
         self.buy_button.pack(side="left", padx=5)
         self.sell_button = ttk.Button(trade, text="Sell spare items", command=lambda: self.trade_inventory(False))
         self.sell_button.pack(side="left", padx=5)
-        self.stock = self.tree(self.inventory_tab, ("name", "type", "spares", "installed"), ("COMPONENT / UNLIMITED STOCK", "TYPE", "SPARES OWNED", "INSTALLED"), (510, 180, 120, 120))
+        self.stock = self.tree(self.inventory_tab, ("name", "type", "spares", "installed", "price", "sale"), ("COMPONENT / UNLIMITED STOCK", "TYPE", "SPARES OWNED", "INSTALLED", "BUY", "SELL 10%"), (430, 160, 110, 100, 110, 110))
         self.catalog_rows = []
         self.catalog_signature = None
 
@@ -560,12 +602,34 @@ class App(tk.Tk):
             locked = bool(self.campaign.pending_action())
             self.buy_button.configure(state="disabled" if locked or not catalog else "normal")
             self.sell_button.configure(state="disabled" if locked else "normal")
-            self.inventory_note.set("Inventory locked until the pending mission, refit or battle finishes." if locked else f"{sum(owned.values())} spare components owned. " + (f"{len(catalog)} stock components exported by NEBULOUS." if catalog else "Start NEBULOUS with bridge 0.5.0 to export the component catalogue."))
+            balance = format_credits(self.campaign.credits)
+            prefix = "Inventory locked until the pending mission, refit or battle finishes. " if locked else ""
+            self.inventory_note.set(
+                prefix + f"{balance} available. {sum(owned.values())} spare components owned. "
+                + (f"{len(catalog)} stock components exported by NEBULOUS." if catalog else "Start NEBULOUS with bridge 0.5.0 to export the component catalogue.")
+            )
             query = self.catalog_search.get().casefold()
             entries = {k: v for k, v in catalog.items()}
             for key in owned.keys() | fitted.keys():
                 entries.setdefault(key, {"Name": key.replace("Stock/", ""), "Type": "Existing equipment"})
-            rows = [(key, (v["Name"], v.get("Type", ""), owned.get(key, 0), fitted.get(key, 0))) for key, v in sorted(entries.items(), key=lambda x: x[1]["Name"]) if query in (v["Name"] + key).casefold()]
+            rows = []
+            for key, value in sorted(entries.items(), key=lambda x: x[1]["Name"]):
+                if query not in (value["Name"] + key).casefold():
+                    continue
+                price = self.economy.component_price(key)
+                rows.append(
+                    (
+                        key,
+                        (
+                            value["Name"],
+                            value.get("Type", ""),
+                            owned.get(key, 0),
+                            fitted.get(key, 0),
+                            f"{price:,}",
+                            f"{self.economy.sale_value(price):,}",
+                        ),
+                    )
+                )
             if rows == self.catalog_rows:
                 return
             selection = self.stock.selection()
@@ -586,9 +650,12 @@ class App(tk.Tk):
                 raise ValueError("Select a component in the equipment store.")
             key = self.catalog_rows[int(selection[0])][0]
             quantity = int(self.trade_quantity.get())
-            self.refits.trade(key, quantity, buy)
-            self.refresh_inventory()
-            self.status.set(f"{'Bought' if buy else 'Sold'} {quantity} × {key.replace('Stock/', '')}. No money charged.")
+            amount = self.refits.trade(key, quantity, buy)
+            self.refresh()
+            self.status.set(
+                f"{'Bought' if buy else 'Sold'} {quantity} × {key.replace('Stock/', '')} "
+                f"for {format_credits(amount)}. Balance {format_credits(self.campaign.credits)}."
+            )
         self.guarded(action)
 
     def refresh_refit(self):
@@ -668,7 +735,7 @@ class App(tk.Tk):
         self._switch_campaign(campaign, campaign_id, new_lock)
         self.status.set(
             f"Campaign '{meta['name']}' created with {meta['starting_ships']} ships, "
-            f"{meta['starting_points']:,} points and {meta['credits']:,} credits."
+            f"{meta['starting_points']:,} points and {format_credits(meta['credits'])}."
         )
 
     def create_test_fleet(self):
@@ -722,7 +789,7 @@ class App(tk.Tk):
     def refresh(self):
         meta = self.campaign.metadata
         if meta:
-            self.campaign_info.set(f"{meta.get('name', 'Campaign')}  /  {meta.get('commander') or 'No commander'}  /  {meta.get('faction', '').replace('Stock/', '')}  /  {int(meta.get('credits', 0)):,} credits")
+            self.campaign_info.set(f"{meta.get('name', 'Campaign')}  /  {meta.get('commander') or 'No commander'}  /  {meta.get('faction', '').replace('Stock/', '')}  /  {format_credits(int(meta.get('credits', 0)))}")
         else:
             self.campaign_info.set("No campaign created. Use New Campaign to begin.")
         self.ships.delete(*self.ships.get_children())
@@ -846,11 +913,13 @@ class App(tk.Tk):
         self.guarded(action)
 
     def create_hull(self, faction, hull, name, number):
-        ship = empty_ship(hull, name, number)
-        key = self.campaign.add_owned_hull(faction, ship, name=name, number=number)
+        key, price = self.economy.buy_hull(faction, hull, name, number)
         self.selected = next((i for i, s in enumerate(self.campaign.player.ships) if s.findtext("Key") == key), 0)
         self.refresh()
-        self.status.set(f"{name} added to the campaign roster. Refit the hull to install equipment.")
+        self.status.set(
+            f"{name} bought for {format_credits(price)}. Balance {format_credits(self.campaign.credits)}. "
+            "Refit the hull to install equipment."
+        )
 
     def sell_hull(self):
         def action():
@@ -859,12 +928,26 @@ class App(tk.Tk):
                 raise ValueError("Select a hull to sell.")
             ship = self.campaign.player.ships[self.selected]
             name = ship.findtext("Name", "this hull")
-            if not messagebox.askyesno("Sell hull", f"Sell {name}? Its installed components will be returned to spare inventory. No credits are refunded.", parent=self):
+            key = ship.findtext("Key")
+            if not self.economy.hull_record(key):
+                raise ValueError("That hull is not in the campaign roster.")
+            value = self.economy.hull_value(key)
+            refund = self.economy.sale_value(value)
+            sale_percent = self.economy.price_book().sale_percent
+            if not messagebox.askyesno(
+                "Sell hull",
+                f"Sell {name}? Its installed components will be returned to spare inventory. "
+                f"You receive {format_credits(refund)} ({sale_percent}% of its {format_credits(value)} value).",
+                parent=self,
+            ):
                 return
-            returned = self.campaign.sell_owned_hull(ship.findtext("Key"))
+            returned, refund = self.economy.sell_hull(key)
             self.selected = min(self.selected, max(0, len(self.campaign.player.ships) - 1))
             self.refresh()
-            self.status.set(f"Sold {name}. Returned {sum(returned.values())} installed component(s) to inventory.")
+            self.status.set(
+                f"Sold {name} for {format_credits(refund)}. Returned {sum(returned.values())} installed "
+                f"component(s) to inventory. Balance {format_credits(self.campaign.credits)}."
+            )
         self.guarded(action)
 
     def start_selected_refit(self):
@@ -1124,7 +1207,7 @@ class LoadCampaignDialog(tk.Toplevel):
         self.load_button.configure(state="disabled" if self.busy else "normal")
         self.message.set(
             f"{campaign.name}  /  {campaign.commander or 'No commander'}  /  "
-            f"{campaign.credits:,} credits  /  {campaign.ships} ships  /  "
+            f"{format_credits(campaign.credits)}  /  {campaign.ships} ships  /  "
             f"Last played {self._display_time(campaign.last_played)}"
         )
 
@@ -1358,6 +1441,7 @@ class HullPurchaseDialog(tk.Toplevel):
         self.catalog = catalog
         self.busy = False
         self.hull_rows = []
+        self.selected_hull = None
         self.faction = app.campaign.metadata.get("faction")
         self.title("Buy hull")
         self.configure(bg=BG)
@@ -1385,7 +1469,10 @@ class HullPurchaseDialog(tk.Toplevel):
         ttk.Label(shell, text="Choose a hull for your campaign", style="Title.TLabel").pack(anchor="w", pady=(4, 3))
         ttk.Label(
             shell,
-            text=f"Showing {self.faction.replace('Stock/', '')} hulls only, the faction selected when this campaign began. Hulls are added empty; no credits are charged in this prototype.",
+            text=(
+                f"Showing {self.faction.replace('Stock/', '')} hulls only, the faction selected when this campaign began. "
+                f"Hulls are added empty and their price is deducted from your {format_credits(self.app.campaign.credits)} balance."
+            ),
             style="Muted.TLabel",
             wraplength=800,
         ).pack(anchor="w")
@@ -1403,14 +1490,16 @@ class HullPurchaseDialog(tk.Toplevel):
             ttk.Label(form, text=label).grid(row=index, column=0, sticky="w", padx=(0, 14), pady=6)
             widget.grid(row=index, column=1, sticky="ew", pady=6)
 
-        self.hulls = self.app.tree(shell, ("name", "class", "points", "sockets"), ("HULL", "CLASS", "POINTS", "SOCKETS"), (330, 180, 90, 90), height=8)
+        self.hulls = self.app.tree(shell, ("name", "class", "points", "credits", "sockets"), ("HULL", "CLASS", "POINTS", "CREDITS", "SOCKETS"), (310, 170, 80, 130, 80), height=8)
         self.hulls.bind("<<TreeviewSelect>>", self._select_hull)
+        self.price = tk.StringVar(value="Select a hull to see its price.")
+        ttk.Label(shell, textvariable=self.price, foreground=TEXT).pack(anchor="w", pady=(8, 0))
         self.message = tk.StringVar(value="")
         ttk.Label(shell, textvariable=self.message, foreground=ACCENT, wraplength=800).pack(anchor="w", pady=8)
 
         actions = ttk.Frame(shell)
         actions.pack(side="bottom", fill="x", pady=(12, 0))
-        self.add_button = ttk.Button(actions, text="Buy hull", command=self.add, style="Accent.TButton")
+        self.add_button = ttk.Button(actions, text="Buy hull", command=self.add, style="Accent.TButton", state="disabled")
         self.add_button.pack(side="left")
         ttk.Button(actions, text="Cancel", command=self.cancel).pack(side="left", padx=10)
 
@@ -1448,33 +1537,68 @@ class HullPurchaseDialog(tk.Toplevel):
     def _refresh_hulls(self, event=None):
         self.hulls.delete(*self.hulls.get_children())
         self.hull_rows = []
+        self.selected_hull = None
         faction = self.catalog.factions.get(self.faction)
         if faction is None:
             self.message.set("The campaign faction is missing from the native fitting catalogue.")
             self.add_button.configure(state="disabled")
             return
         self.hull_rows = sorted(faction.hulls, key=lambda h: (h.class_name.casefold(), h.name.casefold(), h.points))
-        for index, hull in enumerate(self.hull_rows):
-            self.hulls.insert("", "end", iid=str(index), values=(hull.name, hull.class_name, hull.points, len(hull.sockets)))
+        try:
+            prices = [self.app.economy.hull_price(hull.key, hull.points) for hull in self.hull_rows]
+        except PriceError as exc:
+            self.message.set(str(exc))
+            self.add_button.configure(state="disabled")
+            return
+        for index, (hull, price) in enumerate(zip(self.hull_rows, prices)):
+            self.hulls.insert(
+                "",
+                "end",
+                iid=str(index),
+                values=(hull.name, hull.class_name, hull.points, f"{price:,}", len(hull.sockets)),
+            )
         if self.hull_rows:
             self.hulls.selection_set("0")
             self._select_hull()
-            self.message.set("")
-            self.add_button.configure(state="normal")
         else:
+            self.price.set("Select a hull to see its price.")
             self.message.set("This faction has no usable hulls in the native catalogue.")
             self.add_button.configure(state="disabled")
 
-    def _select_hull(self, event=None):
+    def _select_hull(self, event=None, reset_fields=True):
         selection = self.hulls.selection()
         if not selection:
+            self.selected_hull = None
+            self.add_button.configure(state="disabled")
             return
         index = int(selection[0])
         if not 0 <= index < len(self.hull_rows):
             return
         hull = self.hull_rows[index]
-        self.name.set(self._unique_name(hull.name))
-        self.number.set(str(self._unique_number()))
+        self.selected_hull = hull
+        if reset_fields:
+            self.name.set(self._unique_name(hull.name))
+            self.number.set(str(self._unique_number()))
+        try:
+            price = self.app.economy.hull_price(hull.key, hull.points)
+        except PriceError as exc:
+            self.price.set(str(exc))
+            self.message.set(str(exc))
+            self.add_button.configure(state="disabled")
+            return
+        balance = self.app.campaign.credits
+        self.price.set(
+            f"{hull.name}: {format_credits(price)}  •  {hull.points:,} native points  •  "
+            f"sale value {format_credits(self.app.economy.sale_value(price))}"
+        )
+        if price > balance:
+            self.message.set(
+                f"Not enough credits. This hull costs {format_credits(price)}; your balance is {format_credits(balance)}."
+            )
+            self.add_button.configure(state="disabled")
+        else:
+            self.message.set("")
+            self.add_button.configure(state="normal")
 
     def add(self):
         if self.busy:
@@ -1498,7 +1622,7 @@ class HullPurchaseDialog(tk.Toplevel):
             self.app.create_hull(self.faction, hull, name, number)
         except Exception as exc:
             self.busy = False
-            self.add_button.configure(state="normal")
+            self._select_hull(reset_fields=False)
             self.message.set(str(exc))
             messagebox.showerror("Buy hull", str(exc), parent=self)
             return
@@ -1509,6 +1633,127 @@ class HullPurchaseDialog(tk.Toplevel):
         if self.busy:
             return
         self.grab_release()
+        self.destroy()
+
+
+class PriceDebugDialog(tk.Toplevel):
+    """Read-only SHIFT-X view of native points and campaign credits."""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self.title("Price debug · native points vs credits")
+        self.configure(bg=BG)
+        self.transient(app)
+        self.resizable(True, True)
+        try:
+            self.book = app.economy.price_book(reload=True)
+            self.catalog = app.economy.fitting_catalog(reload=True)
+            if self.catalog is None:
+                raise ValueError("The native fitting catalogue is missing. Start NEBULOUS with the bridge enabled first.")
+            if not self.book.validate_catalog(self.catalog):
+                raise PriceError("No priced hulls or components were found in the fitting catalogue.")
+        except Exception:
+            self.destroy()
+            raise
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self._build()
+        self._populate()
+        self.update_idletasks()
+        screen_width, screen_height = self.winfo_screenwidth(), self.winfo_screenheight()
+        width = min(max(1050, self.winfo_reqwidth() + 24), max(760, screen_width - 120))
+        height = min(max(620, self.winfo_reqheight() + 24), max(480, screen_height - 120))
+        x = app.winfo_rootx() + max(0, (app.winfo_width() - width) // 2)
+        y = app.winfo_rooty() + max(0, (app.winfo_height() - height) // 2)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+        self.minsize(min(840, width), min(480, height))
+        self.grab_set()
+        self.lift()
+        self.focus_set()
+
+    def _build(self):
+        shell = ttk.Frame(self, padding=20)
+        shell.pack(fill="both", expand=True)
+        ttk.Label(shell, text="DEBUG · PRICE TABLE", foreground=ACCENT, font=("Segoe UI Semibold", 10)).pack(anchor="w")
+        ttk.Label(shell, text="Native points and campaign credits", style="Title.TLabel").pack(anchor="w", pady=(4, 3))
+        component = self.book.formula["component"]
+        hull = self.book.formula["hull"]
+        ttk.Label(
+            shell,
+            text=(
+                f"Price table: {self.book.source}\n"
+                f"Components: {component['base']:,} + {component['points_squared']:,} × points² "
+                f"(min {component['minimum']:,}, rounded to {component['round_to']:,}).  "
+                f"Hulls: {hull['base']:,} + {hull['per_point']:,} × points "
+                f"(min {hull['minimum']:,}, rounded to {hull['round_to']:,}).  "
+                f"Selling returns {self.book.sale_percent}%."
+            ),
+            style="Muted.TLabel",
+            wraplength=1000,
+        ).pack(anchor="w", pady=(0, 12))
+        self.notebook = ttk.Notebook(shell)
+        self.notebook.pack(fill="both", expand=True)
+        self.hulls_tab = ttk.Frame(self.notebook, padding=10)
+        self.components_tab = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(self.hulls_tab, text="Hulls")
+        self.notebook.add(self.components_tab, text="Components")
+        sale_heading = f"SELL {self.book.sale_percent}%"
+        self.hulls = self.app.tree(
+            self.hulls_tab,
+            ("faction", "name", "class", "points", "credits", "sale", "key"),
+            ("FACTION", "HULL", "CLASS", "POINTS", "CREDITS", sale_heading, "KEY"),
+            (110, 230, 150, 80, 120, 110, 330),
+        )
+        self.components = self.app.tree(
+            self.components_tab,
+            ("faction", "name", "type", "points", "credits", "sale", "key"),
+            ("FACTION", "COMPONENT", "TYPE", "POINTS", "CREDITS", sale_heading, "KEY"),
+            (110, 230, 150, 80, 120, 110, 330),
+        )
+        actions = ttk.Frame(shell)
+        actions.pack(fill="x", pady=(12, 0))
+        ttk.Button(actions, text="Close", command=self.close, style="Accent.TButton").pack(side="right")
+
+    def _populate(self):
+        for faction_key in sorted(self.catalog.factions):
+            faction = self.catalog.factions[faction_key]
+            faction_name = faction_key.replace("Stock/", "")
+            for hull in sorted(faction.hulls, key=lambda item: (item.class_name.casefold(), item.name.casefold())):
+                price = self.book.hull_price(hull.key, hull.points)
+                self.hulls.insert(
+                    "",
+                    "end",
+                    values=(
+                        faction_name,
+                        hull.name,
+                        hull.class_name,
+                        f"{hull.points:,}",
+                        f"{price:,}",
+                        f"{self.book.sale_value(price):,}",
+                        hull.key,
+                    ),
+                )
+            for component in sorted(faction.components.values(), key=lambda item: item.name.casefold()):
+                price = self.book.component_price(component.key, component.points)
+                self.components.insert(
+                    "",
+                    "end",
+                    values=(
+                        faction_name,
+                        component.name,
+                        component.category,
+                        f"{component.points:,}",
+                        f"{price:,}",
+                        f"{self.book.sale_value(price):,}",
+                        component.key,
+                    ),
+                )
+
+    def close(self):
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
         self.destroy()
 
 
