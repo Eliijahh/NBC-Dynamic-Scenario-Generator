@@ -2,6 +2,8 @@
 
 A Windows desktop proof of concept with a shared equipment inventory, credit-priced hulls and components, per-component battle damage, permanent ship loss and automatic battle-report import.
 
+**Download:** grab the latest `NBC-Campaign-Command.exe` from the [Releases](https://github.com/Eliijahh/NBC-Dynamic-Scenario-Generator/releases/latest) page — see [Run](#run) for first-time setup.
+
 > **Interface status (21 October 2026):** the campaign editor is being reworked around a mission generator. The app exposes four tabs — **01 Fleet**, **02 Inventory**, **03 Missions** and **04 Debrief**. The **03 Missions** board generates and lists offers, shows enemy previews and rewards, supports accept, cancel and regenerate, switches to an active-mission view once one is accepted, and opens a **deployment screen** for choosing the ships to send. The **native refit workspace is available again from the Fleet tab** (select one or more hulls and edit them in the in-game editor); the old battle controls were replaced by the mission board.
 
 ## Offline enemy generation (bridge 0.5)
@@ -90,6 +92,14 @@ Requirements: Windows, Python 3.10+ with Tkinter, NEBULOUS: Fleet Command, and S
 
 This builds the bridge and then produces `build/release/NBC-Campaign-Command.exe`, a portable one-file executable with the bridge and `prices.json` bundled. It needs the game installed on the build machine (for the bridge's game assemblies) and downloads PyInstaller into `.tools/venv-build`.
 
+### Publishing a release
+
+```powershell
+& '.\scripts\Publish Release.ps1' -Tag v0.1.0
+```
+
+Install the GitHub CLI once (`winget install --id GitHub.cli`) and sign in (`gh auth login`). The script requires a clean working tree, builds the release, writes a SHA-256 checksum, tags the current commit, pushes the tag, and creates the GitHub Release with the exe and checksum attached. Use `-DryRun` to preview the steps, `-SkipBuild` to reuse an existing exe, and edit `docs/RELEASE-NOTES.md` for the release notes.
+
 ## Playing a campaign
 
 1. The app opens on the main menu with **Continue**, **New Campaign**, **Load Campaign** and **Exit**. **Continue** is shown only when the last-played campaign is valid. **New Campaign** creates an independent save under `data/campaigns/<id>/`, with its own fleet, inventory, credit wallet and ledger, battle history and pending operations. The existing `data/campaign.json` save remains available as the legacy **root** campaign. **Load Campaign** lists saved campaigns with commander, faction, credits, fleet size, last-played time and save status; select one and choose **Load Selected**. A campaign with a pending battle or refit must be finished or cancelled before another campaign can be loaded; an accepted mission does not block switching and is restored with its save. The open campaign is locked, and the lock moves with you when you switch saves.
@@ -140,6 +150,7 @@ bridge/lib/                  Pinned Harmony library and MIT license
 bridge/ModInfo.xml           Local mod manifest
 scripts/Build Bridge.ps1     Compile against installed game libraries
 scripts/Build Release.ps1    Package the portable one-file executable with the bridge bundled
+scripts/Publish Release.ps1  Tag and publish a GitHub Release with the exe and checksum
 Install Bridge.ps1          Install only this mod's files
 data/player.fleet           Legacy root campaign's working player fleet (ignored by Git)
 data/enemy.fleet            Legacy root campaign's generated enemy (ignored by Git)
@@ -151,6 +162,7 @@ data/battles/<id>/           Input fleets, native report.xml and result.xml
 data/refits/<id>/            Original fleet, revision inputs and exported drafts
 tests/fixtures/              Synthetic fitting catalogue used by offline tests
 docs/REFIT-VALIDATION.md      Automated and live refit checks
+docs/RELEASE-NOTES.md         Release notes used by Publish Release.ps1
 ```
 
 The app exports generated fleets into `NEBULOUS/Saves/Fleets/NBC-POC/`. The file exchange lives in `NEBULOUS/Saves/NBCBridge/`:
