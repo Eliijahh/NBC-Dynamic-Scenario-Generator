@@ -334,6 +334,7 @@ class CampaignSetupTests(unittest.TestCase):
                     "mission_offers": [],
                     "mission_meta": {},
                     "accepted_mission": None,
+                    "deployment_xml": "",
                     "active_battle": None,
                     "inventory": {},
                     "credit_ledger": [],

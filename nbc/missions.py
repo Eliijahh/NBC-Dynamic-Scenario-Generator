@@ -518,12 +518,99 @@ class MissionService:
                 ]
                 self.c.state["accepted_mission"] = accepted
                 self.c.state["enemy_xml"] = accepted["enemy_xml"]
+                self.c.state["deployment_xml"] = ""
         except Exception:
             self.c.state = before
             raise
 
         self.c.enemy = enemy
+        self.c.deployment = None
         self.c.save_fleets()
+        return accepted
+
+    def start_deployment(self):
+        """Move an accepted mission into the deployment screen state."""
+        accepted = self.accepted
+        if not accepted:
+            raise ValueError("Accept a mission before deploying.")
+        if self.c.state.get("active_battle"):
+            raise ValueError("A battle is already pending. Wait for it to finish.")
+        if not self.c.player or not self.c.player.ships:
+            raise ValueError("Build a fleet before deploying.")
+        accepted = dict(copy.deepcopy(accepted), status="deploying")
+        with self.c.transaction():
+            self.c.state["accepted_mission"] = accepted
+        return accepted
+
+    def confirm_deployment(self, ship_keys, launch=True):
+        """Build the selected fleet, persist it, and optionally start NEBULOUS."""
+        accepted = self.accepted
+        if not accepted:
+            raise ValueError("Accept a mission before deploying.")
+        if self.c.state.get("active_battle"):
+            raise ValueError("A battle is already pending. Wait for it to finish.")
+        if not self.c.player or not self.c.player.ships:
+            raise ValueError("Build a fleet before deploying.")
+        self.c.ensure_no_launch()
+
+        keys = list(dict.fromkeys(str(key) for key in ship_keys if key))
+        if not keys:
+            raise ValueError("Select at least one ready ship.")
+        if not 1 <= len(keys) <= 10:
+            raise ValueError("Select between 1 and 10 ships for deployment.")
+        ships = {ship.findtext("Key"): ship for ship in self.c.player.ships}
+        missing = [key for key in keys if key not in ships]
+        if missing:
+            raise ValueError("A selected ship is no longer in the roster.")
+        unready = [ships[key] for key in keys if not self.c.ship_ready(key)]
+        if unready:
+            names = ", ".join(ship.findtext("Name", "Unnamed hull") for ship in unready)
+            raise ValueError(
+                f"Repair damaged ships or scrap destroyed components before deployment: {names}."
+            )
+
+        subset = self.c.player.clone()
+        container = subset.root.find("Ships")
+        for ship in list(container.findall("Ship")):
+            if (ship.findtext("Key") or "").strip() not in keys:
+                container.remove(ship)
+        subset.validate(max_ships=10)
+        deployment_xml = ET.tostring(subset.root, encoding="unicode")
+
+        accepted = dict(copy.deepcopy(accepted), status="deploying")
+        accepted["deployment"] = {"ships": keys, "created": now()}
+        before = copy.deepcopy(self.c.state)
+        try:
+            with self.c.transaction():
+                self.c.state["accepted_mission"] = accepted
+                self.c.state["deployment_xml"] = deployment_xml
+        except Exception:
+            self.c.state = before
+            raise
+        self.c.deployment = subset
+
+        if not launch:
+            return accepted
+
+        self.c.launch()
+        accepted = dict(copy.deepcopy(self.accepted), status="active")
+        with self.c.transaction():
+            self.c.state["accepted_mission"] = accepted
+        return accepted
+
+    def abandon_deployment(self):
+        """Return from the deployment screen to the accepted mission board."""
+        accepted = self.accepted
+        if not accepted:
+            return None
+        if self.c.state.get("active_battle"):
+            raise ValueError("A battle is already pending. Wait for it to finish.")
+        accepted = dict(copy.deepcopy(accepted), status="accepted")
+        accepted.pop("deployment", None)
+        with self.c.transaction():
+            self.c.state["accepted_mission"] = accepted
+            self.c.state["deployment_xml"] = ""
+        self.c.deployment = None
         return accepted
 
     def cancel_accepted(self):
@@ -531,9 +618,12 @@ class MissionService:
         offer = self.accepted
         if not offer:
             raise ValueError("There is no accepted mission to cancel.")
+        if self.c.state.get("active_battle"):
+            raise ValueError("Wait for the pending battle to finish before cancelling the mission.")
         returned = normalized_offer(copy.deepcopy(offer))
         returned["status"] = "offered"
         returned.pop("accepted", None)
+        returned.pop("deployment", None)
         returned["expires"] = _expiry(now(), DEFAULT_OFFER_TTL_HOURS)
 
         before = copy.deepcopy(self.c.state)
@@ -544,11 +634,13 @@ class MissionService:
                     item for item in self.sanitize() if item.get("id") != returned.get("id")
                 ]
                 self.c.state["enemy_xml"] = ""
+                self.c.state["deployment_xml"] = ""
         except Exception:
             self.c.state = before
             raise
 
         self.c.enemy = None
+        self.c.deployment = None
         try:
             (self.c.data / "enemy.fleet").unlink()
         except OSError:

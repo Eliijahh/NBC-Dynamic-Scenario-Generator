@@ -6,7 +6,7 @@ import unittest
 import uuid
 import xml.etree.ElementTree as ET
 
-from nbc.core import Campaign, Fleet, write_xml
+from nbc.core import Campaign, Fleet, put, read_xml, write_xml
 from nbc.missions import (
     FALLBACK_PLAYER_POINTS,
     MAX_BUDGET,
@@ -34,8 +34,61 @@ def ship(name, cost):
     )
 
 
+def fitted_ship(name, cost, *parts):
+    root = ship(name, cost)
+    socket_map = root.find("SocketMap")
+    for key, component in parts:
+        socket = ET.SubElement(socket_map, "HullSocket")
+        ET.SubElement(socket, "Key").text = key
+        ET.SubElement(socket, "ComponentName").text = component
+    return root
+
+
 def player_fleet():
-    return fleet_of(ship("Alpha", 1000), ship("Bravo", 1000), ship("Charlie", 1000))
+    return fleet_of(
+        fitted_ship("Alpha", 1000, ("socket", "Stock/Test Cannon")),
+        fitted_ship("Bravo", 1000, ("socket", "Stock/Test Cannon")),
+        fitted_ship("Charlie", 1000, ("socket", "Stock/Test Cannon")),
+    )
+
+
+def write_result(battle, ships, outcome="Victory"):
+    root = ET.Element("BattleResult")
+    put(root, "Id", battle["id"])
+    put(root, "Outcome", outcome)
+    put(root, "Duration", 600)
+    container = ET.SubElement(root, "Ships")
+    for key, name, status, condition in ships:
+        node = ET.SubElement(container, "Ship")
+        for tag, value in {
+            "Key": key,
+            "Side": "Player",
+            "Name": name,
+            "Status": status,
+            "Condition": condition,
+        }.items():
+            put(node, tag, value)
+    write_xml(Path(battle["directory"]) / "result.xml", root)
+
+
+def write_report(battle, ships):
+    root = ET.Element("FullAfterActionReport")
+    teams = ET.SubElement(root, "Teams")
+    team = ET.SubElement(teams, "TeamReportOfShipBattleReportCraftBattleReport")
+    players = ET.SubElement(team, "Players")
+    player = ET.SubElement(players, "AARPlayerReportOfShipBattleReportCraftBattleReport")
+    put(player, "IsLocalPlayer", "true")
+    container = ET.SubElement(player, "Ships")
+    for name, parts in ships.items():
+        node = ET.SubElement(container, "ShipBattleReport")
+        put(node, "ShipName", name)
+        part_status = ET.SubElement(node, "PartStatus")
+        for key, health, destroyed in parts:
+            part = ET.SubElement(part_status, "PartDamage")
+            put(part, "Key", key)
+            put(part, "HealthPercent", health)
+            put(part, "IsDestroyed", "true" if destroyed else "false")
+    write_xml(Path(battle["directory"]) / "report.xml", root)
 
 
 class FormulaTests(unittest.TestCase):
@@ -304,6 +357,193 @@ class MissionGenerationTests(unittest.TestCase):
         self.assertGreaterEqual(len(retry.result()), MIN_OFFER_COUNT)
         self.assertLessEqual(len(retry.result()), MAX_OFFER_COUNT)
         self.assertEqual(self.service.store_generation(retry), retry.result())
+
+    def test_start_deployment_requires_an_accepted_mission(self):
+        with self.assertRaisesRegex(ValueError, "Accept a mission"):
+            self.service.start_deployment()
+
+    def test_confirm_deployment_builds_the_selected_subset(self):
+        offers = self.service.generate(seed=20)
+        self.service.accept(offers[0]["id"])
+        keys = [s.findtext("Key") for s in self.campaign.player.ships]
+        accepted = self.service.confirm_deployment(keys[:2], launch=False)
+        self.assertEqual(accepted["status"], "deploying")
+        self.assertEqual(accepted["deployment"]["ships"], keys[:2])
+        self.assertIsNotNone(self.campaign.deployment)
+        self.assertEqual(
+            [s.findtext("Key") for s in self.campaign.deployment.ships], keys[:2]
+        )
+        self.assertTrue(self.campaign.state["deployment_xml"])
+
+    def test_confirm_deployment_validates_the_selection(self):
+        offers = self.service.generate(seed=21)
+        self.service.accept(offers[0]["id"])
+        keys = [s.findtext("Key") for s in self.campaign.player.ships]
+        with self.assertRaisesRegex(ValueError, "at least one ready ship"):
+            self.service.confirm_deployment([], launch=False)
+        with self.assertRaisesRegex(ValueError, "no longer in the roster"):
+            self.service.confirm_deployment(["missing-key"], launch=False)
+        with self.assertRaisesRegex(ValueError, "between 1 and 10"):
+            self.service.confirm_deployment([f"key-{i}" for i in range(11)], launch=False)
+        self.campaign.state["ship_state"][keys[0]] = {
+            "status": "damaged",
+            "components": [
+                {
+                    "socket": "socket",
+                    "component": "Stock/Test Cannon",
+                    "health": 0.5,
+                    "destroyed": False,
+                }
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "Repair damaged ships"):
+            self.service.confirm_deployment([keys[0]], launch=False)
+
+    def test_prepare_exports_only_the_selected_ships(self):
+        offers = self.service.generate(seed=22)
+        self.service.accept(offers[0]["id"])
+        keys = [s.findtext("Key") for s in self.campaign.player.ships]
+        self.service.confirm_deployment(keys[:2], launch=False)
+        battle = self.campaign.prepare(publish=False)
+        archived = Fleet.load(Path(battle["directory"]) / "player.fleet")
+        self.assertEqual([s.findtext("Key") for s in archived.ships], keys[:2])
+        exported = Fleet.load(
+            self.campaign.game / "Saves" / "Fleets" / "NBC-POC" / "NBC Player.fleet"
+        )
+        self.assertEqual([s.findtext("Key") for s in exported.ships], keys[:2])
+
+    def test_confirm_deployment_launch_marks_the_mission_active(self):
+        offers = self.service.generate(seed=23)
+        self.service.accept(offers[0]["id"])
+        keys = [s.findtext("Key") for s in self.campaign.player.ships]
+        self.campaign.launch = lambda: self.campaign.prepare(publish=False)
+        accepted = self.service.confirm_deployment(keys[:2])
+        self.assertEqual(accepted["status"], "active")
+        self.assertIsNotNone(self.campaign.state["active_battle"])
+
+    def test_collect_scopes_the_report_to_selected_ships(self):
+        offers = self.service.generate(seed=24)
+        self.service.accept(offers[0]["id"])
+        ships = self.campaign.player.ships
+        keys = [s.findtext("Key") for s in ships]
+        names = {s.findtext("Key"): s.findtext("Name") for s in ships}
+        selected, unselected = keys[0], keys[2]
+        self.service.confirm_deployment([keys[0], keys[1]], launch=False)
+        battle = self.campaign.prepare(publish=False)
+        write_result(
+            battle,
+            [
+                (keys[0], names[keys[0]], "NotEliminated", "0.5"),
+                (keys[1], names[keys[1]], "destroyed", "0"),
+            ],
+        )
+        write_report(battle, {names[keys[0]]: [("socket", "0.5", False)]})
+
+        record = self.campaign.collect()
+        self.assertIsNotNone(record)
+        self.assertEqual(len(record["lost_ships"]), 1)
+        self.assertNotEqual(
+            self.campaign.state["ship_state"][selected], {"status": "ready"}
+        )
+        remaining = [s.findtext("Key") for s in self.campaign.player.ships]
+        self.assertNotIn(keys[1], remaining)
+        self.assertIn(unselected, remaining)
+        self.assertEqual(
+            self.campaign.state["ship_state"][unselected], {"status": "ready"}
+        )
+
+    def test_deployment_survives_restart_and_is_cleared_on_abandon(self):
+        offers = self.service.generate(seed=25)
+        self.service.accept(offers[0]["id"])
+        keys = [s.findtext("Key") for s in self.campaign.player.ships]
+        self.service.start_deployment()
+        self.assertEqual(self.service.accepted["status"], "deploying")
+        self.service.confirm_deployment(keys[:2], launch=False)
+
+        restarted = Campaign(self.game, self.data)
+        self.assertEqual(restarted.accepted_mission["status"], "deploying")
+        self.assertIsNotNone(restarted.deployment)
+        self.assertEqual(
+            [s.findtext("Key") for s in restarted.deployment.ships], keys[:2]
+        )
+
+        restarted_service = MissionService(restarted)
+        restarted_service.abandon_deployment()
+        self.assertEqual(restarted.accepted_mission["status"], "accepted")
+        self.assertEqual(restarted.state["deployment_xml"], "")
+        self.assertIsNone(restarted.deployment)
+
+    def test_cancel_accepted_clears_the_deployment(self):
+        offers = self.service.generate(seed=26)
+        self.service.accept(offers[0]["id"])
+        keys = [s.findtext("Key") for s in self.campaign.player.ships]
+        self.service.confirm_deployment(keys[:1], launch=False)
+        self.service.cancel_accepted()
+        self.assertIsNone(self.service.accepted)
+        self.assertEqual(self.campaign.state["deployment_xml"], "")
+        self.assertIsNone(self.campaign.deployment)
+
+    def test_prepare_passes_the_mission_map_and_type(self):
+        offers = self.service.generate(seed=28)
+        self.service.accept(offers[0]["id"])
+        keys = [s.findtext("Key") for s in self.campaign.player.ships]
+        self.service.confirm_deployment(keys[:1], launch=False)
+        battle = self.campaign.prepare(publish=False)
+        request = read_xml(Path(battle["directory"]) / "request.xml")
+        accepted = self.campaign.accepted_mission
+        self.assertEqual(request.findtext("Map"), accepted["map"])
+        self.assertEqual(request.findtext("MissionType"), accepted["type"])
+
+    def test_collect_resolves_the_mission_and_pays_once(self):
+        offers = self.service.generate(seed=27)
+        self.service.accept(offers[0]["id"])
+        accepted = self.campaign.accepted_mission
+        reward = accepted["reward"]
+        keys = [s.findtext("Key") for s in self.campaign.player.ships]
+        self.service.confirm_deployment(keys[:1], launch=False)
+        battle = self.campaign.prepare(publish=False)
+        before = self.campaign.credits
+        write_result(
+            battle,
+            [(keys[0], self.campaign.player.ships[0].findtext("Name"), "NotEliminated", "1")],
+        )
+
+        record = self.campaign.collect()
+        self.assertIsNone(self.campaign.accepted_mission)
+        self.assertIsNone(self.campaign.enemy)
+        self.assertIsNone(self.campaign.deployment)
+        self.assertEqual(self.campaign.state["deployment_xml"], "")
+        self.assertEqual(self.campaign.state["enemy_xml"], "")
+        self.assertEqual(record["mission"]["status"], "completed")
+        self.assertEqual(record["mission"]["payout"], reward)
+        self.assertEqual(record["mission"]["map"], accepted["map"])
+        self.assertEqual(self.campaign.credits, before + reward)
+        self.assertEqual(self.campaign.credit_ledger[-1]["kind"], "mission-reward")
+        self.assertEqual(self.campaign.credit_ledger[-1]["amount"], reward)
+
+        restarted = Campaign(self.game, self.data)
+        self.assertIsNone(restarted.accepted_mission)
+        self.assertIsNone(restarted.enemy)
+        self.assertEqual(restarted.state["battles"][-1]["mission"]["status"], "completed")
+
+    def test_collect_marks_a_defeat_failed_without_payout(self):
+        offers = self.service.generate(seed=29)
+        self.service.accept(offers[0]["id"])
+        keys = [s.findtext("Key") for s in self.campaign.player.ships]
+        self.service.confirm_deployment(keys[:1], launch=False)
+        battle = self.campaign.prepare(publish=False)
+        before = self.campaign.credits
+        write_result(
+            battle,
+            [(keys[0], self.campaign.player.ships[0].findtext("Name"), "destroyed", "1")],
+            outcome="Defeat",
+        )
+
+        record = self.campaign.collect()
+        self.assertEqual(record["mission"]["status"], "failed")
+        self.assertEqual(record["mission"]["payout"], 0)
+        self.assertEqual(self.campaign.credits, before)
+        self.assertIsNone(self.campaign.accepted_mission)
 
 
 if __name__ == "__main__":

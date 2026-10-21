@@ -11,7 +11,7 @@ $compilerPath = Join-Path $sdkRoot "$sdkVersion\Roslyn\bincore\csc.dll"
 $outputPath = Join-Path $projectRoot 'build\NBCBridge'
 New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
 $compilerArguments = @('-nologo', '-target:library', '-nostdlib+', '-langversion:latest', '-optimize+', "-out:$outputPath\NBCBridge.dll")
-$referenceNames = @('mscorlib.dll', 'System.dll', 'System.Core.dll', 'System.Xml.dll', 'Nebulous.dll', 'UnityEngine.dll', 'UnityEngine.CoreModule.dll', 'UnityEngine.SceneManagementModule.dll', 'UnityEngine.AssetBundleModule.dll', 'UnityEngine.IMGUIModule.dll', 'Mirror.dll', 'Facepunch.Steamworks.Win64.dll', 'UnityEngine.UI.dll', 'Unity.TextMeshPro.dll')
+$referenceNames = @('mscorlib.dll', 'System.dll', 'System.Core.dll', 'System.Xml.dll', 'Nebulous.dll', 'UnityEngine.dll', 'UnityEngine.CoreModule.dll', 'UnityEngine.SceneManagementModule.dll', 'UnityEngine.AssetBundleModule.dll', 'UnityEngine.IMGUIModule.dll', 'Mirror.dll', 'Facepunch.Steamworks.Win64.dll', 'UnityEngine.UI.dll', 'Unity.TextMeshPro.dll', 'XNode.dll')
 foreach ($referenceName in $referenceNames) {
     $referencePath = Join-Path $managedPath $referenceName
     if (Test-Path -LiteralPath $referencePath) { $compilerArguments += "-r:$referencePath" }

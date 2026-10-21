@@ -61,7 +61,7 @@ CURRENT BASELINE ALREADY IN THE PROJECT
     independent save directory.
 [x] Pending battle and accepted-mission sessions survive app restarts.
 [x] Automatic bridge acknowledgement and graceful game shutdown.
-[x] 139 Python tests passing.
+[x] 150 Python tests passing.
 [x] Generated three-ship fleet reached the native deployment screen without a
     point-cost discrepancy.
 [ ] Full generated-fleet battle played through completion and report imported.
@@ -105,7 +105,7 @@ CURRENT BASELINE ALREADY IN THE PROJECT
 [x] Initial Settings tab with manual save, resume, save-and-exit and
     exit-without-saving actions for Campaign Command.
 [x] Schema version and migration handling.
-[~] Resume an accepted mission/deployment after an app restart.
+[x] Resume an accepted mission/deployment after an app restart.
 [x] Lock incompatible actions while a refit or battle is pending (an accepted mission does not lock the campaign).
 
 
@@ -244,7 +244,7 @@ price and the point value one next to another
 [x] Show enemy hulls and total points.
 [x] Show the credit reward.
 [x] Show mission type and map in the mission details.
-[~] Show mission state: offered, accepted, deploying, active, completed, failed.
+[x] Show mission state: offered, accepted, deploying, active, completed, failed.
 [x] Accept mission action.
 [x] Cancel accepted mission action.
 [x] Regenerate mission list action.
@@ -257,45 +257,45 @@ price and the point value one next to another
 [x] Accepting a mission stores a fixed snapshot of the enemy fleet.
 [x] Accepting a mission removes it from the normal offer pool.
 [x] Accepted mission survives app restart.
-[ ] Start Mission action appears after acceptance.
+[x] Start Mission action appears after acceptance.
 [x] Cancel accepted mission returns the player to the mission board.
 [x] Cancel accepted mission does not award credits.
 [x] Player refits, repairs, purchases and roster edits remain allowed after acceptance.
 
 5.4 Deployment / ship selection
-[ ] Start Mission opens a separate deployment screen.
-[ ] Show the accepted enemy fleet on the deployment screen.
-[ ] Show the player's full roster and readiness.
-[ ] Allow selecting a subset of ready ships.
-[ ] Prevent selecting damaged or lost ships.
-[ ] Require at least one ready ship before confirmation.
-[ ] Show selected ship count.
-[ ] Show selected fleet points for information.
-[x] No deployment point or ship limit for this PoC.
-[ ] Confirm selection action.
-[ ] Back/cancel action returns to the mission without launching.
-[ ] Confirm builds a temporary selected player fleet.
-[ ] Confirm is blocked if any selected ship is damaged.
-[ ] Confirm is blocked if no ships are selected.
-[ ] Only selected ships are exported to the battle.
-[ ] Unselected ships do not appear in the battle.
-[ ] Unselected ships are not modified by the battle report.
-[ ] Preserve selected ship IDs for report mapping.
-[ ] Start NEBULOUS only after the player confirms deployment.
+[x] Start Mission opens a separate deployment screen.
+[x] Show the accepted enemy fleet on the deployment screen.
+[x] Show the player's full roster and readiness.
+[x] Allow selecting a subset of ready ships.
+[x] Prevent selecting damaged or lost ships.
+[x] Require at least one ready ship before confirmation.
+[x] Show selected ship count.
+[x] Show selected fleet points for information.
+[x] No deployment point or ship limit for this PoC (the native skirmish still accepts at most 10 ships).
+[x] Confirm selection action.
+[x] Back/cancel action returns to the mission without launching.
+[x] Confirm builds a temporary selected player fleet.
+[x] Confirm is blocked if any selected ship is damaged.
+[x] Confirm is blocked if no ships are selected.
+[x] Only selected ships are exported to the battle.
+[x] Unselected ships do not appear in the battle.
+[x] Unselected ships are not modified by the battle report.
+[x] Preserve selected ship IDs for report mapping.
+[x] Start NEBULOUS only after the player confirms deployment.
 
 5.5 Mission completion
-[ ] Read the native battle outcome automatically.
-[ ] Determine mission won, lost, drawn or surrendered.
-[ ] Mark the mission completed or failed.
-[ ] Award the correct credit reward exactly once.
-[ ] Apply damage and permanent losses only to selected ships.
-[ ] Remove destroyed ships and their installed components.
-[ ] Record the mission in battle history.
-[ ] Record the payout in the transaction ledger.
-[ ] Clear the active mission after resolution.
-[ ] Make completion idempotent if the report is imported more than once.
-[ ] Define payout for a loss, draw, surrender or retreat.
-[ ] Show the payout and consequences in the debrief.
+[x] Read the native battle outcome automatically.
+[x] Determine mission won, lost, drawn or surrendered.
+[x] Mark the mission completed or failed.
+[x] Award the correct credit reward exactly once.
+[x] Apply damage and permanent losses only to selected ships.
+[x] Remove destroyed ships and their installed components.
+[x] Record the mission in battle history.
+[x] Record the payout in the transaction ledger.
+[x] Clear the active mission after resolution.
+[x] Make completion idempotent if the report is imported more than once.
+[x] Define payout for a loss, draw, surrender or retreat (victory pays; anything else pays nothing).
+[x] Show the payout and consequences in the debrief.
 [ ] Return the player to Home after the debrief.
 
 
@@ -306,14 +306,15 @@ price and the point value one next to another
 [x] Native report import and result validation.
 [x] Duplicate battle import prevention.
 [x] Battle ID and player ship ID matching.
-[ ] Change battle preparation from the whole fleet to a selected fleet subset.
-[ ] Archive only the selected player fleet with the battle.
-[ ] Scope report ship matching to the selected ship IDs.
-[ ] Apply report consequences only to selected ships.
-[ ] Verify that unselected ships and their components are untouched.
+[x] Change battle preparation from the whole fleet to a selected fleet subset.
+[x] Archive only the selected player fleet with the battle.
+[x] Scope report ship matching to the selected ship IDs.
+[x] Apply report consequences only to selected ships.
+[x] Verify that unselected ships and their components are untouched.
+[x] Select the mission's map and scenario in the in-game skirmish lobby.
 [ ] Verify a generated-fleet battle through completion.
 [ ] Verify mission reward, damage, repair and permanent loss in one live loop.
-[ ] Handle app or game restart while a mission is accepted or deploying.
+[~] Handle app or game restart while a mission is accepted or deploying.
 [ ] Handle a battle report arriving after the app has restarted.
 [ ] Verify the selected-fleet flow with every supported mission size.
 

@@ -107,6 +107,8 @@ class App(tk.Tk):
         self.mission_job = None
         self.mission_job_reroll = False
         self.mission_generation_failed = False
+        self.deployment_selected = set()
+        self.deployment_visible = False
         self.economy = EconomyService(self.campaign)
         self.templates = discover(game)
         self.selected = None
@@ -184,6 +186,8 @@ class App(tk.Tk):
         self.mission_job = None
         self.mission_job_reroll = False
         self.mission_generation_failed = False
+        self.deployment_selected = set()
+        self.deployment_visible = False
         self.economy = EconomyService(self.campaign)
         if old_lock is not None:
             old_lock.close()
@@ -311,10 +315,19 @@ class App(tk.Tk):
         self.build_settings_screen()
 
         self.build_missions_tab()
+        self.build_deployment_screen()
 
         ttk.Label(self.result_tab, text="Battle history", style="Sub.TLabel").pack(anchor="w", pady=(0, 12))
         self.history = self.tree(self.result_tab, ("time", "outcome", "duration", "id"), ("ENGAGEMENT", "OUTCOME", "SECONDS", "BATTLE ID"), (230, 140, 100, 330), height=5)
         self.history.bind("<<TreeviewSelect>>", self.select_result)
+        self.mission_result = tk.StringVar(value="")
+        ttk.Label(
+            self.result_tab,
+            textvariable=self.mission_result,
+            foreground=ACCENT,
+            wraplength=1100,
+            justify="left",
+        ).pack(anchor="w", pady=(8, 8))
         self.results = self.tree(self.result_tab, ("side", "name", "status", "condition", "crew", "damage"), ("SIDE", "SHIP", "STATUS", "CONDITION", "CREW", "DAMAGE DEALT"), (90, 230, 140, 100, 100, 130), height=7)
         ttk.Label(self.result_tab, text="Losses", style="Sub.TLabel").pack(anchor="w", pady=(16, 6))
         self.losses = tk.StringVar(value="No ships lost in this engagement.")
@@ -379,8 +392,11 @@ class App(tk.Tk):
 
     def show_main(self):
         self.settings_visible = False
+        self.deployment_visible = False
         self.menu.pack_forget()
         self.settings_screen.pack_forget()
+        if hasattr(self, "deployment_screen"):
+            self.deployment_screen.pack_forget()
         self.tabs.pack(fill="both", expand=True)
         self.main.pack(fill="both", expand=True)
 
@@ -442,6 +458,11 @@ class App(tk.Tk):
             self.tabs.select(self.missions_tab)
             self.status.set("Resumed pending battle. Waiting for NEBULOUS.")
         elif self.campaign.accepted_mission:
+            accepted = self.campaign.accepted_mission
+            if accepted.get("status") == "deploying" and not self.campaign.state.get("active_battle"):
+                self.show_deployment()
+                self.status.set("Deployment selection restored.")
+                return "deployment"
             self.tabs.select(self.missions_tab)
             self.status.set("Accepted mission restored. The rest of the campaign remains available.")
             return "mission"
@@ -540,6 +561,8 @@ class App(tk.Tk):
     def show_settings(self):
         self.settings_visible = True
         self.tabs.pack_forget()
+        if hasattr(self, "deployment_screen"):
+            self.deployment_screen.pack_forget()
         self.settings_screen.pack(fill="both", expand=True)
         self._refresh_settings()
         self.status.set("Campaign settings.")
@@ -547,6 +570,16 @@ class App(tk.Tk):
     def resume_campaign(self):
         self.settings_visible = False
         self.settings_screen.pack_forget()
+        accepted = self.missions.accepted if hasattr(self, "missions") else None
+        if (
+            self.deployment_visible
+            and accepted
+            and accepted.get("status") == "deploying"
+            and not self.campaign.state.get("active_battle")
+        ):
+            self.show_deployment()
+            self.status.set("Deployment selection.")
+            return
         self.tabs.pack(fill="both", expand=True)
         self.status.set("Resumed campaign.")
 
@@ -933,6 +966,7 @@ class App(tk.Tk):
         self.refresh_inventory()
         self.refresh_repair()
         self._refresh_mission_summary()
+        self.refresh_missions()
 
     def refresh_repair(self, event=None):
         if not hasattr(self, "repair_info"):
@@ -990,25 +1024,7 @@ class App(tk.Tk):
     def build_missions_tab(self):
         header = ttk.Frame(self.missions_tab)
         header.pack(fill="x")
-        ttk.Label(header, text="Mission board", style="Sub.TLabel").pack(side="left")
-        self.missions_refresh_button = ttk.Button(
-            header, text="Regenerate offers", command=self.regenerate_missions
-        )
-        self.missions_refresh_button.pack(side="right")
-        ttk.Label(
-            self.missions_tab,
-            text=(
-                "Offers are fitted offline from the bridge catalogue. Every offer is an "
-                "annihilation mission on Abyssal (4p) or The Cliff (4p). Accept one to freeze "
-                "its enemy fleet and remove it from the pool; deployment selection comes later."
-            ),
-            style="Muted.TLabel",
-            wraplength=1100,
-        ).pack(anchor="w", pady=(8, 8))
-
-        self.missions_progress = ttk.Progressbar(
-            self.missions_tab, mode="determinate", maximum=1.0
-        )
+        ttk.Label(header, text="Missions", style="Sub.TLabel").pack(side="left")
         self.missions_message = tk.StringVar(value="")
         self.missions_message_label = ttk.Label(
             self.missions_tab,
@@ -1016,9 +1032,30 @@ class App(tk.Tk):
             foreground=ACCENT,
             wraplength=1100,
         )
-        self.missions_message_label.pack(anchor="w", pady=(0, 8))
+        self.missions_message_label.pack(anchor="w", pady=(6, 6))
+        self.missions_progress = ttk.Progressbar(
+            self.missions_tab, mode="determinate", maximum=1.0
+        )
 
-        body = ttk.Frame(self.missions_tab)
+        # Board view: shown while no mission is accepted.
+        self.missions_board = ttk.Frame(self.missions_tab)
+        board_header = ttk.Frame(self.missions_board)
+        board_header.pack(fill="x")
+        ttk.Label(board_header, text="Mission board", style="Sub.TLabel").pack(side="left")
+        self.missions_refresh_button = ttk.Button(
+            board_header, text="Regenerate offers", command=self.regenerate_missions
+        )
+        self.missions_refresh_button.pack(side="right")
+        ttk.Label(
+            self.missions_board,
+            text=(
+                "Every offer is an annihilation mission on Abyssal (4p) or The Cliff (4p). "
+                "Accept one to freeze its enemy fleet and remove it from the pool."
+            ),
+            style="Muted.TLabel",
+            wraplength=1100,
+        ).pack(anchor="w", pady=(6, 8))
+        body = ttk.Frame(self.missions_board)
         body.pack(fill="both", expand=True)
         left = ttk.Frame(body)
         left.pack(side="left", fill="both", expand=True)
@@ -1034,16 +1071,12 @@ class App(tk.Tk):
         )
         self.mission_offers.bind("<<TreeviewSelect>>", self.select_mission)
 
-        actions = ttk.Frame(left)
-        actions.pack(fill="x", pady=10)
+        board_actions = ttk.Frame(left)
+        board_actions.pack(fill="x", pady=10)
         self.accept_mission_button = ttk.Button(
-            actions, text="Accept mission", command=self.accept_mission, style="Accent.TButton"
+            board_actions, text="Accept mission", command=self.accept_mission, style="Accent.TButton"
         )
         self.accept_mission_button.pack(side="left", padx=(0, 8))
-        self.cancel_mission_button = ttk.Button(
-            actions, text="Cancel accepted mission", command=self.cancel_mission
-        )
-        self.cancel_mission_button.pack(side="left", padx=(0, 8))
 
         ttk.Label(right, text="MISSION DETAILS", foreground=ACCENT).pack(anchor="w")
         self.mission_detail = tk.StringVar(value="Select an offer to inspect its enemy fleet.")
@@ -1059,18 +1092,46 @@ class App(tk.Tk):
             ("name", "hull", "points"),
             ("ENEMY SHIP", "HULL", "POINTS"),
             (200, 230, 80),
-            height=7,
+            height=8,
         )
 
-        ttk.Label(right, text="ACCEPTED MISSION", foreground=ACCENT).pack(anchor="w", pady=(16, 4))
-        self.active_mission = tk.StringVar(value="No mission accepted.")
+        # Active mission view: shown while a mission is accepted.
+        self.missions_active = ttk.Frame(self.missions_tab)
+        ttk.Label(self.missions_active, text="ACCEPTED MISSION", foreground=ACCENT).pack(anchor="w")
+        self.active_mission = tk.StringVar(value="")
         ttk.Label(
-            right,
+            self.missions_active,
             textvariable=self.active_mission,
-            style="Muted.TLabel",
-            wraplength=520,
+            style="Sub.TLabel",
+            wraplength=1100,
             justify="left",
-        ).pack(anchor="w")
+        ).pack(anchor="w", pady=(4, 2))
+        self.active_mission_meta = tk.StringVar(value="")
+        ttk.Label(
+            self.missions_active,
+            textvariable=self.active_mission_meta,
+            style="Muted.TLabel",
+            wraplength=1100,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 10))
+        active_actions = ttk.Frame(self.missions_active)
+        active_actions.pack(fill="x", pady=(0, 10))
+        self.start_mission_button = ttk.Button(
+            active_actions, text="Start mission", command=self.start_deployment, style="Accent.TButton"
+        )
+        self.start_mission_button.pack(side="left", padx=(0, 8))
+        self.cancel_mission_button = ttk.Button(
+            active_actions, text="Cancel accepted mission", command=self.cancel_mission
+        )
+        self.cancel_mission_button.pack(side="left", padx=(0, 8))
+        ttk.Label(self.missions_active, text="ENEMY FLEET", foreground=ACCENT).pack(anchor="w", pady=(6, 4))
+        self.active_enemy = self.tree(
+            self.missions_active,
+            ("name", "hull", "points"),
+            ("ENEMY SHIP", "HULL", "POINTS"),
+            (240, 300, 90),
+            height=10,
+        )
 
     def _on_tab_changed(self, event=None):
         if not hasattr(self, "mission_offers"):
@@ -1175,15 +1236,20 @@ class App(tk.Tk):
         self.missions_refresh_button.configure(
             state="disabled" if busy or accepted else "normal"
         )
+        battle_pending = bool(self.campaign.state.get("active_battle"))
         if busy:
             self.accept_mission_button.configure(state="disabled")
+            self.start_mission_button.configure(state="disabled")
             self.cancel_mission_button.configure(state="disabled")
         else:
             self.accept_mission_button.configure(
                 state="disabled" if accepted or not self.missions.sanitize() else "normal"
             )
+            self.start_mission_button.configure(
+                state="normal" if accepted and not battle_pending else "disabled"
+            )
             self.cancel_mission_button.configure(
-                state="normal" if accepted else "disabled"
+                state="normal" if accepted and not battle_pending else "disabled"
             )
 
     def refresh_missions(self):
@@ -1195,53 +1261,72 @@ class App(tk.Tk):
         offers = self.missions.sanitize()
         accepted = self.missions.accepted
         busy = bool(self.mission_job is not None and self.mission_job.running())
-        selected = self.mission_offers.selection()
-        selected_id = selected[0] if selected else None
-
-        self.mission_offers.delete(*self.mission_offers.get_children())
-        for offer in offers:
-            self.mission_offers.insert(
-                "",
-                "end",
-                iid=offer["id"],
-                values=(
-                    offer.get("name", ""),
-                    (offer.get("faction") or "").replace("Stock/", ""),
-                    (offer.get("difficulty") or "").title(),
-                    f"{offer.get('points', 0):,}",
-                    offer.get("ships", 0),
-                    format_credits(offer.get("reward", 0)),
-                    mission_expiry_text(offer.get("expires")),
-                ),
-            )
-        ids = [offer["id"] for offer in offers]
-        if selected_id in ids:
-            self.mission_offers.selection_set(selected_id)
-        elif ids:
-            self.mission_offers.selection_set(ids[0])
-        self.select_mission()
+        battle_pending = bool(self.campaign.state.get("active_battle"))
 
         if accepted:
+            self.missions_board.pack_forget()
+            self.missions_active.pack(fill="both", expand=True)
             self.active_mission.set(
                 f"{accepted.get('name')}  ·  {(accepted.get('type') or '').title()}  ·  "
+                f"{accepted.get('map') or '—'}"
+            )
+            self.active_mission_meta.set(
+                f"{(accepted.get('faction') or '').replace('Stock/', '')}  ·  "
                 f"{(accepted.get('difficulty') or '').title()}  ·  "
-                f"{accepted.get('points', 0):,} points  ·  {accepted.get('ships', 0)} ships\n"
-                f"Map: {accepted.get('map') or '—'}  ·  "
-                f"reward {format_credits(accepted.get('reward', 0))}"
+                f"{accepted.get('points', 0):,} enemy points  ·  {accepted.get('ships', 0)} enemy ships  ·  "
+                f"reward {format_credits(accepted.get('reward', 0))}  ·  "
+                f"status {(accepted.get('status') or 'accepted').title()}"
+            )
+            self.active_enemy.delete(*self.active_enemy.get_children())
+            for ship in accepted.get("preview", []):
+                self.active_enemy.insert(
+                    "",
+                    "end",
+                    values=(
+                        ship.get("name", ""),
+                        (ship.get("hull") or "").replace("Stock/", ""),
+                        f"{ship.get('points', 0):,}",
+                    ),
+                )
+            self.start_mission_button.configure(
+                state="normal" if not battle_pending and not busy else "disabled"
+            )
+            self.cancel_mission_button.configure(
+                state="normal" if not battle_pending and not busy else "disabled"
             )
         else:
-            self.active_mission.set("No mission accepted.")
-        self._refresh_mission_summary(accepted)
+            self.missions_active.pack_forget()
+            self.missions_board.pack(fill="both", expand=True)
+            selected = self.mission_offers.selection()
+            selected_id = selected[0] if selected else None
+            self.mission_offers.delete(*self.mission_offers.get_children())
+            for offer in offers:
+                self.mission_offers.insert(
+                    "",
+                    "end",
+                    iid=offer["id"],
+                    values=(
+                        offer.get("name", ""),
+                        (offer.get("faction") or "").replace("Stock/", ""),
+                        (offer.get("difficulty") or "").title(),
+                        f"{offer.get('points', 0):,}",
+                        offer.get("ships", 0),
+                        format_credits(offer.get("reward", 0)),
+                        mission_expiry_text(offer.get("expires")),
+                    ),
+                )
+            ids = [offer["id"] for offer in offers]
+            if selected_id in ids:
+                self.mission_offers.selection_set(selected_id)
+            elif ids:
+                self.mission_offers.selection_set(ids[0])
+            self.select_mission()
+            self.accept_mission_button.configure(
+                state="disabled" if busy or not offers else "normal"
+            )
+            self.missions_refresh_button.configure(state="disabled" if busy else "normal")
 
-        self.accept_mission_button.configure(
-            state="disabled" if busy or accepted or not offers else "normal"
-        )
-        self.cancel_mission_button.configure(
-            state="disabled" if busy or not accepted else "normal"
-        )
-        self.missions_refresh_button.configure(
-            state="disabled" if busy or accepted else "normal"
-        )
+        self._refresh_mission_summary(accepted)
 
     def select_mission(self, event=None):
         if not hasattr(self, "mission_enemy"):
@@ -1324,6 +1409,279 @@ class App(tk.Tk):
                 self.mission_summary.set(
                     "No active mission. Open the Missions tab to generate offers."
                 )
+
+    def build_deployment_screen(self):
+        self.deployment_screen = ttk.Frame(self.main, padding=(0, 12))
+        ttk.Label(
+            self.deployment_screen,
+            text="DEPLOYMENT",
+            foreground=ACCENT,
+            font=("Segoe UI Semibold", 10),
+        ).pack(anchor="w")
+        self.deployment_title = tk.StringVar(value="")
+        ttk.Label(
+            self.deployment_screen, textvariable=self.deployment_title, style="Sub.TLabel"
+        ).pack(anchor="w", pady=(4, 3))
+        self.deployment_mission = tk.StringVar(value="")
+        ttk.Label(
+            self.deployment_screen,
+            textvariable=self.deployment_mission,
+            style="Muted.TLabel",
+            wraplength=1100,
+        ).pack(anchor="w")
+        self.deployment_message = tk.StringVar(value="Select the ships to deploy.")
+        ttk.Label(
+            self.deployment_screen,
+            textvariable=self.deployment_message,
+            foreground=ACCENT,
+            wraplength=1100,
+        ).pack(anchor="w", pady=(8, 8))
+
+        body = ttk.Frame(self.deployment_screen)
+        body.pack(fill="both", expand=True)
+        left = ttk.Frame(body)
+        left.pack(side="left", fill="both", expand=True)
+        right = ttk.Frame(body, padding=(20, 0, 0, 0))
+        right.pack(side="right", fill="both", expand=True)
+
+        ttk.Label(left, text="YOUR ROSTER", foreground=ACCENT).pack(anchor="w")
+        ttk.Label(
+            left,
+            text=(
+                "Click the DEPLOY cell (or select a row and press Space) to include a ready "
+                "ship. Damaged or lost ships cannot be selected."
+            ),
+            style="Muted.TLabel",
+            wraplength=520,
+        ).pack(anchor="w", pady=(2, 6))
+        self.deployment_ships = self.tree(
+            left,
+            ("deploy", "name", "hull", "status", "points"),
+            ("DEPLOY", "SHIP", "HULL", "STATUS", "POINTS"),
+            (70, 180, 180, 120, 70),
+            height=10,
+        )
+        self.deployment_ships.tag_configure("unready", foreground=MUTED)
+        self.deployment_ships.bind("<ButtonRelease-1>", self._deployment_click)
+        self.deployment_ships.bind("<space>", self._deployment_space)
+
+        selection_actions = ttk.Frame(left)
+        selection_actions.pack(fill="x", pady=8)
+        ttk.Button(
+            selection_actions, text="Select all ready", command=self.deployment_select_all
+        ).pack(side="left", padx=(0, 8))
+        ttk.Button(
+            selection_actions, text="Clear selection", command=self.deployment_clear
+        ).pack(side="left")
+        self.deployment_totals = tk.StringVar(value="Selected: 0 ships · 0 points")
+        ttk.Label(left, textvariable=self.deployment_totals, style="Sub.TLabel").pack(
+            anchor="w", pady=(2, 8)
+        )
+
+        actions = ttk.Frame(left)
+        actions.pack(fill="x", pady=8)
+        self.deployment_confirm_button = ttk.Button(
+            actions,
+            text="Confirm deployment  →  NEBULOUS",
+            command=self.confirm_deployment,
+            style="Accent.TButton",
+        )
+        self.deployment_confirm_button.pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="Back to mission", command=self.abandon_deployment).pack(
+            side="left"
+        )
+
+        ttk.Label(right, text="ACCEPTED ENEMY FLEET", foreground=ACCENT).pack(anchor="w")
+        self.deployment_enemy = self.tree(
+            right,
+            ("name", "hull", "points"),
+            ("ENEMY SHIP", "HULL", "POINTS"),
+            (200, 230, 80),
+            height=10,
+        )
+
+    def _ship_label(self, ship):
+        key = ship.findtext("Key", "")
+        item = (self.campaign.state.get("ship_state") or {}).get(key, {})
+        status = item.get("status", "ready")
+        if status != "lost" and item.get("components"):
+            status = "damaged"
+        if status == "damaged":
+            return f"{ship_damage_fraction(ship, item):.0%} Damaged"
+        if status == "lost":
+            return "Lost"
+        return "Ready"
+
+    def start_deployment(self):
+        def action():
+            self.missions.start_deployment()
+            self.show_deployment()
+            self.refresh_missions()
+            self.status.set("Choose the ships to deploy, then confirm.")
+        self.guarded(action)
+
+    def show_deployment(self):
+        accepted = self.missions.accepted
+        if not accepted:
+            self.status.set("Accept a mission before deploying.")
+            return
+        self.deployment_visible = True
+        self.deployment_title.set(
+            f"{accepted.get('name')}  ·  {(accepted.get('type') or '').title()}  ·  "
+            f"{accepted.get('map') or ''}"
+        )
+        self.deployment_mission.set(
+            f"{(accepted.get('faction') or '').replace('Stock/', '')}  ·  "
+            f"{(accepted.get('difficulty') or '').title()}  ·  "
+            f"{accepted.get('points', 0):,} enemy points  ·  {accepted.get('ships', 0)} enemy ships  ·  "
+            f"reward {format_credits(accepted.get('reward', 0))}"
+        )
+        self.deployment_message.set(
+            "Select the ships to deploy. Damaged or lost ships cannot be selected."
+        )
+        self.deployment_enemy.delete(*self.deployment_enemy.get_children())
+        for ship in accepted.get("preview", []):
+            self.deployment_enemy.insert(
+                "",
+                "end",
+                values=(
+                    ship.get("name", ""),
+                    (ship.get("hull") or "").replace("Stock/", ""),
+                    f"{ship.get('points', 0):,}",
+                ),
+            )
+        ready = (
+            [
+                ship.findtext("Key")
+                for ship in self.campaign.player.ships
+                if self.campaign.ship_ready(ship.findtext("Key"))
+            ]
+            if self.campaign.player
+            else []
+        )
+        previous = (accepted.get("deployment") or {}).get("ships") or []
+        preselected = [key for key in previous if key in ready]
+        self.deployment_selected = set(preselected[:10] if preselected else ready[:10])
+        self.settings_screen.pack_forget()
+        self.tabs.pack_forget()
+        self.deployment_screen.pack(fill="both", expand=True)
+        self._refresh_deployment()
+
+    def _refresh_deployment(self):
+        if not hasattr(self, "deployment_ships"):
+            return
+        selected = []
+        self.deployment_ships.delete(*self.deployment_ships.get_children())
+        for ship in self.campaign.player.ships if self.campaign.player else []:
+            key = ship.findtext("Key", "")
+            ready = self.campaign.ship_ready(key)
+            self.deployment_ships.insert(
+                "",
+                "end",
+                iid=key,
+                values=(
+                    "✓" if key in self.deployment_selected and ready else "",
+                    ship.findtext("Name", ""),
+                    ship.findtext("HullType", "").replace("Stock/", ""),
+                    self._ship_label(ship),
+                    f"{int(ship.findtext('Cost', '0') or 0):,}",
+                ),
+                tags=() if ready else ("unready",),
+            )
+            if key in self.deployment_selected and ready:
+                selected.append(ship)
+        self.deployment_selected = {ship.findtext("Key") for ship in selected}
+        points = sum(int(ship.findtext("Cost", "0") or 0) for ship in selected)
+        self.deployment_totals.set(
+            f"Selected: {len(selected)} ships  ·  {points:,} points  ·  up to 10 ships"
+        )
+        if len(selected) > 10:
+            self.deployment_message.set("Select at most 10 ships for the native skirmish.")
+            self.deployment_confirm_button.configure(state="disabled")
+        elif not selected:
+            self.deployment_message.set("Select at least one ready ship to deploy.")
+            self.deployment_confirm_button.configure(state="disabled")
+        else:
+            self.deployment_message.set("Ready to deploy. Confirm to start NEBULOUS.")
+            self.deployment_confirm_button.configure(state="normal")
+
+    def _deployment_click(self, event):
+        row = self.deployment_ships.identify_row(event.y)
+        column = self.deployment_ships.identify_column(event.x)
+        if row and column == "#1":
+            self._deployment_toggle(row)
+
+    def _deployment_space(self, event=None):
+        row = self.deployment_ships.focus()
+        if row:
+            self._deployment_toggle(row)
+        return "break"
+
+    def _deployment_toggle(self, key):
+        if not self.campaign.ship_ready(key):
+            self.deployment_message.set(
+                "Damaged or lost ships cannot be deployed. Repair them first."
+            )
+            return
+        if key in self.deployment_selected:
+            self.deployment_selected.discard(key)
+        else:
+            self.deployment_selected.add(key)
+        self._refresh_deployment()
+
+    def deployment_select_all(self):
+        if not self.campaign.player:
+            return
+        ready = [
+            ship.findtext("Key")
+            for ship in self.campaign.player.ships
+            if self.campaign.ship_ready(ship.findtext("Key"))
+        ]
+        self.deployment_selected = set(ready[:10])
+        self._refresh_deployment()
+        if len(ready) > 10:
+            self.deployment_message.set(
+                "Selected the first 10 ready ships; the native skirmish accepts at most 10."
+            )
+
+    def deployment_clear(self):
+        self.deployment_selected = set()
+        self._refresh_deployment()
+
+    def confirm_deployment(self):
+        keys = list(self.deployment_selected)
+        try:
+            if not keys:
+                raise ValueError("Select at least one ready ship.")
+            self.deployment_confirm_button.configure(state="disabled")
+            self.deployment_message.set("Preparing the selected fleet and starting NEBULOUS…")
+            self.update_idletasks()
+            self.missions.confirm_deployment(keys)
+        except Exception as exc:
+            self.deployment_message.set(str(exc))
+            self.status.set(str(exc))
+            self._refresh_deployment()
+            messagebox.showerror("Deployment", str(exc), parent=self)
+            return
+        self.deployment_visible = False
+        self.deployment_screen.pack_forget()
+        self.tabs.pack(fill="both", expand=True)
+        self.tabs.select(self.missions_tab)
+        self.refresh()
+        self.refresh_missions()
+        self.status.set("Selected fleet deployed. Waiting for NEBULOUS…")
+
+    def abandon_deployment(self):
+        def action():
+            self.missions.abandon_deployment()
+            self.deployment_visible = False
+            self.deployment_screen.pack_forget()
+            self.tabs.pack(fill="both", expand=True)
+            self.tabs.select(self.missions_tab)
+            self.refresh()
+            self.refresh_missions()
+            self.status.set("Deployment cancelled. The mission is still accepted.")
+        self.guarded(action)
 
     def select_ship(self, event=None):
         selection = self.ships.selection()
@@ -1620,6 +1978,21 @@ class App(tk.Tk):
             display = f"{float(condition):.0%}" if condition else "—"
             self.results.insert("", "end", values=(s.get("Side"), s.get("Name"), s.get("Status"), display, f"{s.get('FinalCrew', '?')}/{s.get('OriginalCrew', '?')}", s.get("DamageDealt")))
         self.show_losses(battle)
+        self.show_mission_result(battle)
+
+    def show_mission_result(self, battle):
+        """Show the mission outcome and payout for the selected engagement."""
+        mission = battle.get("mission")
+        if not mission:
+            self.mission_result.set("")
+            return
+        payout = int(mission.get("payout", 0) or 0)
+        self.mission_result.set(
+            f"Mission {(mission.get('status') or '').title()}: {mission.get('name') or 'Mission'}  ·  "
+            f"{(mission.get('type') or '').title()} on {mission.get('map') or '—'}  ·  "
+            f"outcome {mission.get('outcome') or '—'}  ·  "
+            + (f"payout {format_credits(payout)}" if payout else "no payout")
+        )
 
     def show_losses(self, battle):
         """List ships destroyed in the selected battle and the components lost with them."""

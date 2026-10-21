@@ -334,6 +334,7 @@ class Campaign:
         self.runtime = GameRuntime(self.game, self.exchange)
         self.player = Fleet(ET.fromstring(self.state["player_xml"])) if self.state.get("player_xml") else Fleet.load(self.data / "player.fleet") if (self.data / "player.fleet").exists() else None
         self.enemy = Fleet(ET.fromstring(self.state["enemy_xml"])) if self.state.get("enemy_xml") else Fleet.load(self.data / "enemy.fleet") if (self.data / "enemy.fleet").exists() else None
+        self.deployment = Fleet(ET.fromstring(self.state["deployment_xml"])) if self.state.get("deployment_xml") else None
         self.ensure_legacy_campaign(persist=False)
         seeded_owned = False
         if self.state.get("owned_hulls"):
@@ -366,6 +367,7 @@ class Campaign:
             "mission_offers": [],
             "mission_meta": {},
             "accepted_mission": None,
+            "deployment_xml": "",
             "active_battle": None,
             "inventory": {},
             "credit_ledger": [],
@@ -402,6 +404,8 @@ class Campaign:
         for key in ("battles", "mission_offers", "refits", "credit_ledger"):
             if not isinstance(state[key], list):
                 raise ValueError(f"Campaign {key} must be a list.")
+        if not isinstance(state.get("deployment_xml", ""), str):
+            raise ValueError("Campaign deployment fleet must be text.")
         for entry in state["credit_ledger"]:
             if not isinstance(entry, dict):
                 raise ValueError("Campaign credit ledger entries must be objects.")
@@ -962,7 +966,7 @@ class Campaign:
         starter.validate()
 
         self.backup_campaign()
-        previous = (copy.deepcopy(self.state), self.player, self.enemy)
+        previous = (copy.deepcopy(self.state), self.player, self.enemy, self.deployment)
         self.state = self._default_state()
         self.state["campaign"] = {
             "id": str(campaign_id or uuid.uuid4()),
@@ -982,6 +986,7 @@ class Campaign:
         self.state["campaign_status"] = "active"
         self.player = starter
         self.enemy = None
+        self.deployment = None
         if credits:
             self._append_credit_entry(
                 credits,
@@ -995,7 +1000,7 @@ class Campaign:
                 enemy_path.unlink()
             self.save_fleets()
         except Exception:
-            self.state, self.player, self.enemy = previous
+            self.state, self.player, self.enemy, self.deployment = previous
             raise
         return self.metadata
 
@@ -1022,11 +1027,15 @@ class Campaign:
 
     def prepare(self, publish=True):
         self.ensure_no_launch()
-        if not self.player or not self.enemy:
+        fleet = self.deployment or self.player
+        if not fleet or not self.enemy:
             raise ValueError("Load a player fleet and generate an enemy first.")
-        if not self.player or not 1 <= len(self.player.ships) <= 10:
+        if not 1 <= len(fleet.ships) <= 10:
             raise ValueError("A battle export requires 1–10 ships. Select a mission deployment of ten or fewer hulls first.")
-        unready = self.unready_ships()
+        unready = [
+            ship for ship in fleet.ships
+            if not self.ship_ready(ship.findtext("Key"))
+        ]
         if unready:
             names = ", ".join(ship.findtext("Name", "Unnamed hull") for ship in unready)
             raise ValueError(
@@ -1038,14 +1047,15 @@ class Campaign:
         archive.mkdir(parents=True)
         exports = self.game / "Saves" / "Fleets" / "NBC-POC"
         p, e = exports / "NBC Player.fleet", exports / "NBC Enemy.fleet"
-        player = self.player.clone()
+        player = fleet.clone()
         put(player.root, "Name", "NBC Player")
         player.save(p)
         self.enemy.save(e)
         player.save(archive / "player.fleet")
         self.enemy.save(archive / "enemy.fleet")
+        mission = self.state.get("accepted_mission") or {}
         request = ET.Element("BattleRequest", version="1")
-        for key, value in {"Id": battle_id, "CreatedUtc": now(), "PlayerFleet": str(p), "EnemyFleet": str(e), "ResultDirectory": str(archive.resolve()), "PlayerHash": hashlib.sha256(p.read_bytes()).hexdigest(), "EnemyHash": hashlib.sha256(e.read_bytes()).hexdigest()}.items():
+        for key, value in {"Id": battle_id, "CreatedUtc": now(), "PlayerFleet": str(p), "EnemyFleet": str(e), "ResultDirectory": str(archive.resolve()), "PlayerHash": hashlib.sha256(p.read_bytes()).hexdigest(), "EnemyHash": hashlib.sha256(e.read_bytes()).hexdigest(), "Map": mission.get("map", ""), "MissionType": mission.get("type", "")}.items():
             put(request, key, value)
         record = {"id": battle_id, "status": "requested", "created": now(), "directory": str(archive.resolve())}
         self.state["active_battle"] = record
@@ -1262,20 +1272,58 @@ class Campaign:
                     container.remove(ship)
             player.validate(max_ships=None, allow_empty=True)
 
-        before, previous_player = copy.deepcopy(self.state), self.player
+        before = (copy.deepcopy(self.state), self.player, self.enemy, self.deployment)
         self.player = player
+        mission = None
         try:
             self.state["ship_results"].update(updates)
             self.state["battles"].append(record)
             self.state["active_battle"] = None
             self.state["ship_state"] = ship_state
+            mission = self.state.get("accepted_mission")
+            if mission:
+                record["mission"] = self._resolve_mission(mission, record.get("outcome", ""))
+                self.state["accepted_mission"] = None
+                self.state["deployment_xml"] = ""
+                self.state["enemy_xml"] = ""
+                self.enemy = None
+                self.deployment = None
             self.queue_ack(result, "battle")
             self.save_fleets()
         except Exception:
-            self.state, self.player = before, previous_player
+            self.state, self.player, self.enemy, self.deployment = before
             raise
+        if mission:
+            try:
+                (self.data / "enemy.fleet").unlink()
+            except OSError:
+                pass
         self.flush_ack()
         return record
+
+    def _resolve_mission(self, mission, outcome):
+        """Mark a completed mission and pay its reward exactly once."""
+        won = (outcome or "").strip().casefold() == "victory"
+        reward = int(mission.get("reward", 0)) if won else 0
+        if reward and self.state.get("campaign") is not None:
+            self.state["campaign"]["credits"] = self.credits + reward
+            self._append_credit_entry(
+                reward,
+                "mission-reward",
+                f"Mission reward: {mission.get('name', 'Mission')}",
+                {"mission": mission.get("id"), "outcome": outcome},
+            )
+        return {
+            "id": mission.get("id"),
+            "name": mission.get("name"),
+            "type": mission.get("type"),
+            "map": mission.get("map"),
+            "difficulty": mission.get("difficulty"),
+            "status": "completed" if won else "failed",
+            "outcome": outcome,
+            "reward": int(mission.get("reward", 0)),
+            "payout": reward,
+        }
 
     def cancel(self):
         active = self.state.get("active_battle")
