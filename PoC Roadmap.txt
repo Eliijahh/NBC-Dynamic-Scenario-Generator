@@ -148,13 +148,15 @@ CURRENT BASELINE ALREADY IN THE PROJECT
 3.2 Hull ownership
 [ ] Track owned hulls separately from the exported fleet file.
 [ ] Buy a hull and add it to the campaign roster.
+[ ] Ability to first select which faction the hull should come from
+[ ] Have a list of all available hulls for each faction that can be purchased
 [ ] Assign a unique ship identity, name and hull number.
-[ ] Decide whether a purchased hull starts empty or with a default loadout.
+[ ] Ability to rename hulls
+[ ] Hulls start empty with no components
 [ ] Allow a purchased hull to be fitted through the native editor.
-[ ] Respect the existing maximum fleet size.
+[ ] Player can have as many hulls as they want, as the number limitation of hulls will only come into play when selecting which hulls should be taken in a mission
 [ ] Show owned hulls and their readiness in the roster UI.
-[ ] Decide how selling, scrapping or retiring a hull works.
-[ ] Decide what happens when the fleet is full and a hull is purchased.
+[ ] Ability to sell a hull which removes all components and put them into the inventory
 
 3.3 Component ownership
 [ ] Buy components with credits.
