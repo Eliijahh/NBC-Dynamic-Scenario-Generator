@@ -364,6 +364,7 @@ class Campaign:
             "ship_state": {},
             "owned_hulls": {},
             "mission_offers": [],
+            "mission_meta": {},
             "accepted_mission": None,
             "active_battle": None,
             "inventory": {},
@@ -387,7 +388,7 @@ class Campaign:
             state.setdefault(key, copy.deepcopy(value))
         state["version"] = STATE_VERSION
 
-        for key in ("inventory", "owned_hulls", "ship_state", "ship_results"):
+        for key in ("inventory", "owned_hulls", "ship_state", "ship_results", "mission_meta"):
             if not isinstance(state[key], dict):
                 raise ValueError(f"Campaign {key} must be an object.")
         for key, record in state["owned_hulls"].items():
@@ -572,12 +573,15 @@ class Campaign:
         return self.state.get("accepted_mission")
 
     def pending_action(self):
+        """Return the operation that blocks the campaign, if any.
+
+        An accepted mission is deliberately not included: accepting a mission
+        must not stop refits, repairs, purchases or roster edits.
+        """
         if self.state.get("active_battle"):
             return "battle"
         if self.state.get("active_refit"):
             return "refit"
-        if self.state.get("accepted_mission"):
-            return "mission"
         return None
 
     def ensure_idle(self):

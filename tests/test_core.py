@@ -332,6 +332,7 @@ class CampaignSetupTests(unittest.TestCase):
                     "ship_state": {},
                     "owned_hulls": {},
                     "mission_offers": [],
+                    "mission_meta": {},
                     "accepted_mission": None,
                     "active_battle": None,
                     "inventory": {},
@@ -493,19 +494,18 @@ class CampaignSetupTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     Campaign(self.campaign.game, data)
 
-    def test_pending_mission_state_persists_and_locks_idle_actions(self):
+    def test_pending_mission_state_persists_without_locking_idle_actions(self):
         self.campaign.start_new_campaign(
             "Mission Watch", "Cmdr Vale", "Stock/Alliance", 1000, sample("Mission Starter")
         )
         self.campaign.state["accepted_mission"] = {"id": "mission-1", "name": "Patrol"}
         self.campaign.persist()
 
-        self.assertEqual(self.campaign.pending_action(), "mission")
-        with self.assertRaisesRegex(ValueError, "pending mission"):
-            self.campaign.ensure_idle()
+        self.assertIsNone(self.campaign.pending_action())
+        self.campaign.ensure_idle()  # an accepted mission must not lock the campaign
 
         restarted = Campaign(self.campaign.game, self.campaign.data)
-        self.assertEqual(restarted.pending_action(), "mission")
+        self.assertIsNone(restarted.pending_action())
         self.assertEqual(restarted.accepted_mission["id"], "mission-1")
         self.assertEqual(restarted.campaign_status, "active")
 
@@ -581,8 +581,8 @@ class CampaignSetupTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.campaign.start_new_campaign(*args)
 
-    def test_new_campaign_is_blocked_by_pending_activity(self):
-        for key in ("active_battle", "active_refit", "accepted_mission"):
+    def test_new_campaign_is_blocked_by_pending_battle_or_refit(self):
+        for key in ("active_battle", "active_refit"):
             with self.subTest(key=key):
                 self.campaign.state[key] = {"id": "pending"}
                 with self.assertRaises(ValueError):
@@ -591,6 +591,11 @@ class CampaignSetupTests(unittest.TestCase):
                     )
                 self.assertEqual(self.campaign.state[key], {"id": "pending"})
                 self.campaign.state[key] = None
+
+    def test_new_campaign_is_allowed_with_an_accepted_mission(self):
+        self.campaign.state["accepted_mission"] = {"id": "mission"}
+        self.campaign.start_new_campaign("Campaign", "Cmdr", "Stock/Alliance", 1000, sample())
+        self.assertIsNone(self.campaign.state["accepted_mission"])
 
 
 class ExchangeTests(unittest.TestCase):

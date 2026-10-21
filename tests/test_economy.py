@@ -170,6 +170,24 @@ class EconomyServiceTests(unittest.TestCase):
         restarted = Campaign(self.c.game, self.c.data)
         self.assertEqual(restarted.state["ship_state"][key]["status"], "ready")
 
+    def test_repair_is_allowed_while_a_mission_is_accepted(self):
+        key = self.c.player.ships[0].findtext("Key")
+        self.c.player.ships[0].find("SocketMap/HullSocket/ComponentName").text = "Stock/Test Radar"
+        self.c.save_fleets()
+        self.c.state["ship_state"][key] = {
+            "status": "damaged",
+            "components": [
+                {"socket": "socket", "component": "Stock/Test Radar", "health": 0.5, "destroyed": False}
+            ],
+        }
+        self.c.state["accepted_mission"] = {"id": "mission-1"}
+        self.c.persist()
+
+        repaired = self.economy.repair_ship(key)
+        self.assertEqual(repaired["cost"], 3_850)
+        self.assertEqual(self.c.state["ship_state"][key], {"status": "ready"})
+        self.assertEqual(self.c.accepted_mission["id"], "mission-1")
+
     def test_repair_quote_prices_each_damaged_component_separately(self):
         ship = self.c.player.ships[0]
         for socket_key, component in (("radar", "Stock/Test Radar"), ("cannon", "Stock/Test Cannon")):

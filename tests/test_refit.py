@@ -63,12 +63,11 @@ class RefitTests(unittest.TestCase):
                 self.service.trade("Stock/Radar", 1)
         self.assertEqual(self.c.state, before)
 
-    def test_pending_mission_locks_economy_and_refit(self):
+    def test_accepted_mission_does_not_lock_economy_or_refit(self):
         self.c.state["accepted_mission"] = {"id": "mission-1"}
-        with self.assertRaisesRegex(ValueError, "pending mission"):
-            self.service.trade("Stock/Radar", 1)
-        with self.assertRaisesRegex(ValueError, "pending mission"):
-            self.service.start(launch=False)
+        self.service.trade("Stock/Radar", 1)
+        self.service.start(launch=False)
+        self.assertIsNotNone(self.service.active)
 
     def test_shared_transfer_and_inventory_conservation(self):
         baseline = self.c.player.clone()

@@ -10,9 +10,19 @@ from nbc.economy import EconomyService, PriceError, format_credits
 from nbc.fitting import Catalog, CatalogError
 from nbc.generation import GenerationService
 from nbc.library import CampaignLibrary
+from nbc.missions import MissionService
 from nbc.refit import RefitService, installed
 
 BG, PANEL, TEXT, MUTED, ACCENT = "#101820", "#182530", "#e4edf4", "#9aafbf", "#53d4b1"
+
+
+def mission_expiry_text(value):
+    if not value:
+        return "—"
+    text = str(value)
+    if len(text) >= 16 and text[10] == "T":
+        return f"{text[:10]} {text[11:16]} UTC"
+    return text
 
 
 class Tooltip:
@@ -93,6 +103,10 @@ class App(tk.Tk):
             raise SystemExit(1)
         self.refits = RefitService(self.campaign)
         self.generation = GenerationService(self.campaign)
+        self.missions = MissionService(self.campaign)
+        self.mission_job = None
+        self.mission_job_reroll = False
+        self.mission_generation_failed = False
         self.economy = EconomyService(self.campaign)
         self.templates = discover(game)
         self.selected = None
@@ -166,6 +180,10 @@ class App(tk.Tk):
         self.save_lock = new_lock
         self.refits = RefitService(self.campaign)
         self.generation = GenerationService(self.campaign)
+        self.missions = MissionService(self.campaign)
+        self.mission_job = None
+        self.mission_job_reroll = False
+        self.mission_generation_failed = False
         self.economy = EconomyService(self.campaign)
         if old_lock is not None:
             old_lock.close()
@@ -175,6 +193,7 @@ class App(tk.Tk):
         self.refresh()
         self.show_main()
         self.resume_pending_campaign()
+        self._ensure_missions()
 
     def _style(self):
         s = ttk.Style(self)
@@ -252,6 +271,8 @@ class App(tk.Tk):
         ttk.Button(bar, text="Export .fleet", command=self.export).pack(side="right")
         self.fleet_info = ttk.Label(self.fleet_tab, text="", style="Sub.TLabel")
         self.fleet_info.pack(anchor="w", pady=14)
+        self.mission_summary = tk.StringVar(value="")
+        ttk.Label(self.fleet_tab, textvariable=self.mission_summary, foreground=ACCENT, wraplength=1100).pack(anchor="w", pady=(0, 10))
         body = ttk.Frame(self.fleet_tab)
         body.pack(fill="both", expand=True)
         left, right = ttk.Frame(body), ttk.Frame(body, padding=(20, 0, 0, 0))
@@ -289,8 +310,7 @@ class App(tk.Tk):
         self.build_inventory_tab()
         self.build_settings_screen()
 
-        ttk.Label(self.missions_tab, text="Missions", style="Sub.TLabel").pack(anchor="w")
-        ttk.Label(self.missions_tab, text="Mission generation and deployment will be rebuilt here.", style="Muted.TLabel", wraplength=1050).pack(anchor="w", pady=8)
+        self.build_missions_tab()
 
         ttk.Label(self.result_tab, text="Battle history", style="Sub.TLabel").pack(anchor="w", pady=(0, 12))
         self.history = self.tree(self.result_tab, ("time", "outcome", "duration", "id"), ("ENGAGEMENT", "OUTCOME", "SECONDS", "BATTLE ID"), (230, 140, 100, 330), height=5)
@@ -301,6 +321,7 @@ class App(tk.Tk):
         self.losses_label = ttk.Label(self.result_tab, textvariable=self.losses, foreground=MUTED, wraplength=1050, justify="left")
         self.losses_label.pack(anchor="w")
         ttk.Label(self.result_tab, text="Raw battle reports and input fleets are archived under data/battles/<battle ID>/.", style="Muted.TLabel").pack(anchor="w", pady=10)
+        self.tabs.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
     def _build_menu(self):
         self.menu.columnconfigure(0, weight=1)
@@ -376,6 +397,8 @@ class App(tk.Tk):
         pending = self.resume_pending_campaign()
         if not pending:
             self.status.set("Campaign loaded. Ready to continue.")
+        self.mission_generation_failed = False
+        self._ensure_missions()
 
     def load_campaign(self):
         LoadCampaignDialog(self)
@@ -393,7 +416,7 @@ class App(tk.Tk):
                 self.status.set(f"Campaign '{self.campaign.metadata.get('name', 'Campaign')}' loaded.")
             return
         if self.campaign.pending_action():
-            raise ValueError("Finish or cancel the pending mission, battle or refit before loading another campaign.")
+            raise ValueError("Finish or cancel the pending battle or refit before loading another campaign.")
         new_lock = self._acquire_lock(info.path)
         try:
             campaign = Campaign(self.campaign.game, info.path)
@@ -403,7 +426,7 @@ class App(tk.Tk):
             new_lock.close()
             raise
         self._switch_campaign(campaign, info.id, new_lock)
-        if not campaign.pending_action():
+        if not campaign.pending_action() and not campaign.accepted_mission:
             self.status.set(f"Campaign '{campaign.metadata.get('name', 'Campaign')}' loaded.")
 
     def resume_pending_campaign(self):
@@ -418,9 +441,10 @@ class App(tk.Tk):
         elif pending == "battle":
             self.tabs.select(self.missions_tab)
             self.status.set("Resumed pending battle. Waiting for NEBULOUS.")
-        elif pending == "mission":
+        elif self.campaign.accepted_mission:
             self.tabs.select(self.missions_tab)
-            self.status.set("Accepted mission restored from the save.")
+            self.status.set("Accepted mission restored. The rest of the campaign remains available.")
+            return "mission"
         else:
             self.tabs.select(self.fleet_tab)
         return pending
@@ -598,7 +622,7 @@ class App(tk.Tk):
             self.buy_button.configure(state="disabled" if locked or not catalog else "normal")
             self.sell_button.configure(state="disabled" if locked else "normal")
             balance = format_credits(self.campaign.credits)
-            prefix = "Inventory locked until the pending mission, refit or battle finishes. " if locked else ""
+            prefix = "Inventory locked until the pending refit or battle finishes. " if locked else ""
             self.inventory_note.set(
                 prefix + f"{balance} available. {sum(owned.values())} spare components owned. "
                 + (f"{len(catalog)} stock components exported by NEBULOUS." if catalog else "Start NEBULOUS with bridge 0.5.0 to export the component catalogue.")
@@ -908,6 +932,7 @@ class App(tk.Tk):
         self._refresh_menu()
         self.refresh_inventory()
         self.refresh_repair()
+        self._refresh_mission_summary()
 
     def refresh_repair(self, event=None):
         if not hasattr(self, "repair_info"):
@@ -961,6 +986,344 @@ class App(tk.Tk):
             text=f"Repair all ({len(damaged)} · {format_credits(total)})",
             state="disabled" if busy or self.campaign.credits < total else "normal",
         )
+
+    def build_missions_tab(self):
+        header = ttk.Frame(self.missions_tab)
+        header.pack(fill="x")
+        ttk.Label(header, text="Mission board", style="Sub.TLabel").pack(side="left")
+        self.missions_refresh_button = ttk.Button(
+            header, text="Regenerate offers", command=self.regenerate_missions
+        )
+        self.missions_refresh_button.pack(side="right")
+        ttk.Label(
+            self.missions_tab,
+            text=(
+                "Offers are fitted offline from the bridge catalogue. Every offer is an "
+                "annihilation mission on Abyssal (4p) or The Cliff (4p). Accept one to freeze "
+                "its enemy fleet and remove it from the pool; deployment selection comes later."
+            ),
+            style="Muted.TLabel",
+            wraplength=1100,
+        ).pack(anchor="w", pady=(8, 8))
+
+        self.missions_progress = ttk.Progressbar(
+            self.missions_tab, mode="determinate", maximum=1.0
+        )
+        self.missions_message = tk.StringVar(value="")
+        self.missions_message_label = ttk.Label(
+            self.missions_tab,
+            textvariable=self.missions_message,
+            foreground=ACCENT,
+            wraplength=1100,
+        )
+        self.missions_message_label.pack(anchor="w", pady=(0, 8))
+
+        body = ttk.Frame(self.missions_tab)
+        body.pack(fill="both", expand=True)
+        left = ttk.Frame(body)
+        left.pack(side="left", fill="both", expand=True)
+        right = ttk.Frame(body, padding=(20, 0, 0, 0))
+        right.pack(side="right", fill="both", expand=True)
+
+        self.mission_offers = self.tree(
+            left,
+            ("name", "faction", "difficulty", "points", "ships", "reward", "expires"),
+            ("MISSION", "FACTION", "DIFFICULTY", "POINTS", "SHIPS", "REWARD", "EXPIRES"),
+            (200, 85, 75, 60, 50, 90, 130),
+            height=9,
+        )
+        self.mission_offers.bind("<<TreeviewSelect>>", self.select_mission)
+
+        actions = ttk.Frame(left)
+        actions.pack(fill="x", pady=10)
+        self.accept_mission_button = ttk.Button(
+            actions, text="Accept mission", command=self.accept_mission, style="Accent.TButton"
+        )
+        self.accept_mission_button.pack(side="left", padx=(0, 8))
+        self.cancel_mission_button = ttk.Button(
+            actions, text="Cancel accepted mission", command=self.cancel_mission
+        )
+        self.cancel_mission_button.pack(side="left", padx=(0, 8))
+
+        ttk.Label(right, text="MISSION DETAILS", foreground=ACCENT).pack(anchor="w")
+        self.mission_detail = tk.StringVar(value="Select an offer to inspect its enemy fleet.")
+        ttk.Label(
+            right,
+            textvariable=self.mission_detail,
+            style="Muted.TLabel",
+            wraplength=520,
+            justify="left",
+        ).pack(anchor="w", pady=(6, 8))
+        self.mission_enemy = self.tree(
+            right,
+            ("name", "hull", "points"),
+            ("ENEMY SHIP", "HULL", "POINTS"),
+            (200, 230, 80),
+            height=7,
+        )
+
+        ttk.Label(right, text="ACCEPTED MISSION", foreground=ACCENT).pack(anchor="w", pady=(16, 4))
+        self.active_mission = tk.StringVar(value="No mission accepted.")
+        ttk.Label(
+            right,
+            textvariable=self.active_mission,
+            style="Muted.TLabel",
+            wraplength=520,
+            justify="left",
+        ).pack(anchor="w")
+
+    def _on_tab_changed(self, event=None):
+        if not hasattr(self, "mission_offers"):
+            return
+        try:
+            selected = self.tabs.select()
+        except tk.TclError:
+            return
+        if selected == str(self.missions_tab):
+            self._ensure_missions()
+
+    def _ensure_missions(self):
+        """Generate a batch on first visit, otherwise render the current board."""
+        if not hasattr(self, "mission_offers") or not self.campaign.has_campaign:
+            return
+        self.missions.migrate()
+        if self.mission_job is not None and self.mission_job.running():
+            return
+        if (
+            not self.missions.accepted
+            and not self.missions.sanitize()
+            and not self.mission_generation_failed
+        ):
+            self.start_mission_generation()
+            return
+        self.refresh_missions()
+
+    def regenerate_missions(self):
+        if self.campaign.accepted_mission:
+            self.status.set("Cancel the accepted mission before regenerating offers.")
+            return
+        self.mission_generation_failed = False
+        self.start_mission_generation(reroll=True)
+
+    def start_mission_generation(self, reroll=False):
+        if not self.campaign.has_campaign:
+            self.status.set("Create or load a campaign first.")
+            return
+        if self.mission_job is not None and self.mission_job.running():
+            return
+        try:
+            self.mission_job = self.missions.start_generation()
+        except Exception as exc:
+            self.missions_message.set(str(exc))
+            self.mission_generation_failed = True
+            self.refresh_missions()
+            return
+        self.mission_job_reroll = reroll
+        self.missions_message.set("Generating mission offers…")
+        self._set_mission_busy(True, 0.0)
+        self.after(80, lambda: self._poll_mission_job(self.mission_job))
+
+    def _poll_mission_job(self, job=None):
+        if job is not None and job is not self.mission_job:
+            return
+        job = self.mission_job
+        if job is None:
+            self._set_mission_busy(False)
+            return
+        if job.running():
+            self._set_mission_busy(True, job.progress)
+            self.after(80, lambda: self._poll_mission_job(job))
+            return
+        if job.failed():
+            self.missions_message.set(f"Could not generate missions: {job.error}")
+            self.mission_generation_failed = True
+            self.mission_job = None
+            self._set_mission_busy(False)
+            self.refresh_missions()
+            self.status.set("Mission generation failed.")
+            return
+        try:
+            offers = self.missions.store_generation(job, rerolled=self.mission_job_reroll)
+        except Exception as exc:
+            self.missions_message.set(str(exc))
+            self.mission_generation_failed = True
+            self.mission_job = None
+            self._set_mission_busy(False)
+            self.refresh_missions()
+            return
+        self.mission_job = None
+        self.missions_message.set(
+            f"{len(offers)} mission offers available. Select one to inspect its enemy fleet."
+        )
+        self._set_mission_busy(False)
+        self.refresh()
+        self.refresh_missions()
+        self.status.set(f"Generated {len(offers)} mission offers.")
+
+    def _set_mission_busy(self, busy, progress=0.0):
+        if not hasattr(self, "missions_progress"):
+            return
+        if busy:
+            if not self.missions_progress.winfo_manager():
+                self.missions_progress.pack(
+                    anchor="w", fill="x", pady=(0, 6), before=self.missions_message_label
+                )
+            self.missions_progress.configure(value=progress)
+        else:
+            self.missions_progress.pack_forget()
+        accepted = self.missions.accepted
+        self.missions_refresh_button.configure(
+            state="disabled" if busy or accepted else "normal"
+        )
+        if busy:
+            self.accept_mission_button.configure(state="disabled")
+            self.cancel_mission_button.configure(state="disabled")
+        else:
+            self.accept_mission_button.configure(
+                state="disabled" if accepted or not self.missions.sanitize() else "normal"
+            )
+            self.cancel_mission_button.configure(
+                state="normal" if accepted else "disabled"
+            )
+
+    def refresh_missions(self):
+        if not hasattr(self, "mission_offers"):
+            return
+        self._render_missions()
+
+    def _render_missions(self):
+        offers = self.missions.sanitize()
+        accepted = self.missions.accepted
+        busy = bool(self.mission_job is not None and self.mission_job.running())
+        selected = self.mission_offers.selection()
+        selected_id = selected[0] if selected else None
+
+        self.mission_offers.delete(*self.mission_offers.get_children())
+        for offer in offers:
+            self.mission_offers.insert(
+                "",
+                "end",
+                iid=offer["id"],
+                values=(
+                    offer.get("name", ""),
+                    (offer.get("faction") or "").replace("Stock/", ""),
+                    (offer.get("difficulty") or "").title(),
+                    f"{offer.get('points', 0):,}",
+                    offer.get("ships", 0),
+                    format_credits(offer.get("reward", 0)),
+                    mission_expiry_text(offer.get("expires")),
+                ),
+            )
+        ids = [offer["id"] for offer in offers]
+        if selected_id in ids:
+            self.mission_offers.selection_set(selected_id)
+        elif ids:
+            self.mission_offers.selection_set(ids[0])
+        self.select_mission()
+
+        if accepted:
+            self.active_mission.set(
+                f"{accepted.get('name')}  ·  {(accepted.get('type') or '').title()}  ·  "
+                f"{(accepted.get('difficulty') or '').title()}  ·  "
+                f"{accepted.get('points', 0):,} points  ·  {accepted.get('ships', 0)} ships\n"
+                f"Map: {accepted.get('map') or '—'}  ·  "
+                f"reward {format_credits(accepted.get('reward', 0))}"
+            )
+        else:
+            self.active_mission.set("No mission accepted.")
+        self._refresh_mission_summary(accepted)
+
+        self.accept_mission_button.configure(
+            state="disabled" if busy or accepted or not offers else "normal"
+        )
+        self.cancel_mission_button.configure(
+            state="disabled" if busy or not accepted else "normal"
+        )
+        self.missions_refresh_button.configure(
+            state="disabled" if busy or accepted else "normal"
+        )
+
+    def select_mission(self, event=None):
+        if not hasattr(self, "mission_enemy"):
+            return
+        self.mission_enemy.delete(*self.mission_enemy.get_children())
+        selection = self.mission_offers.selection()
+        offers = {offer["id"]: offer for offer in self.missions.sanitize()}
+        if not selection or selection[0] not in offers:
+            self.mission_detail.set("Select an offer to inspect its enemy fleet.")
+            return
+        offer = offers[selection[0]]
+        self.mission_detail.set(
+            f"{offer.get('name')}  ·  {(offer.get('type') or '').title()}  ·  "
+            f"{(offer.get('difficulty') or '').title()}  ·  "
+            f"{(offer.get('faction') or '').replace('Stock/', '')}  ·  "
+            f"{offer.get('points', 0):,} points  ·  {offer.get('ships', 0)} ships  ·  "
+            f"{(offer.get('status') or 'offered').title()}\n"
+            f"Map: {offer.get('map') or '—'}  ·  "
+            f"Reward {format_credits(offer.get('reward', 0))}  ·  "
+            f"offer expires {mission_expiry_text(offer.get('expires'))}."
+        )
+        for ship in offer.get("preview", []):
+            self.mission_enemy.insert(
+                "",
+                "end",
+                values=(
+                    ship.get("name", ""),
+                    (ship.get("hull") or "").replace("Stock/", ""),
+                    f"{ship.get('points', 0):,}",
+                ),
+            )
+
+    def accept_mission(self):
+        def action():
+            selection = self.mission_offers.selection()
+            if not selection:
+                raise ValueError("Select a mission offer to accept.")
+            accepted = self.missions.accept(selection[0])
+            self.missions_message.set(
+                f"Accepted {accepted.get('name')}. Deployment selection is next."
+            )
+            self.refresh()
+            self.refresh_missions()
+            self.status.set(
+                f"Mission accepted: {accepted.get('name')}  ·  "
+                f"reward {format_credits(accepted.get('reward', 0))}."
+            )
+        self.guarded(action)
+
+    def cancel_mission(self):
+        def action():
+            returned = self.missions.cancel_accepted()
+            self.missions_message.set(
+                f"Cancelled {returned.get('name')}. The offer is back on the board."
+            )
+            self.refresh()
+            self.refresh_missions()
+            self.status.set("Mission cancelled. No reward was awarded.")
+        self.guarded(action)
+
+    def _refresh_mission_summary(self, accepted=None):
+        if not hasattr(self, "mission_summary"):
+            return
+        accepted = self.missions.accepted if accepted is None else accepted
+        if accepted:
+            self.mission_summary.set(
+                f"Active mission: {accepted.get('name')}  ·  "
+                f"{(accepted.get('type') or '').title()} on {accepted.get('map') or '—'}  ·  "
+                f"{(accepted.get('difficulty') or '').title()}  ·  "
+                f"{accepted.get('points', 0):,} points  ·  "
+                f"reward {format_credits(accepted.get('reward', 0))}"
+            )
+        else:
+            offers = self.missions.sanitize()
+            if offers:
+                self.mission_summary.set(
+                    f"{len(offers)} mission offers available. Open the Missions tab to accept one."
+                )
+            else:
+                self.mission_summary.set(
+                    "No active mission. Open the Missions tab to generate offers."
+                )
 
     def select_ship(self, event=None):
         selection = self.ships.selection()
