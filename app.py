@@ -1,10 +1,12 @@
 """Run with Python 3.10+; uses only the Python standard library."""
 import copy
+import random
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
 
 from nbc.core import Campaign, Fleet, DEFAULT_GAME, DEFAULT_STARTING_CREDITS, ROOT, discover, put
+from nbc.fitting import Catalog, CatalogError, empty_ship
 from nbc.generation import GenerationService
 from nbc.library import CampaignLibrary
 from nbc.refit import RefitService, installed
@@ -239,10 +241,12 @@ class App(tk.Tk):
         left, right = ttk.Frame(body), ttk.Frame(body, padding=(20, 0, 0, 0))
         left.pack(side="left", fill="both", expand=True)
         right.pack(side="right", fill="both", expand=True)
-        self.ships = self.tree(left, ("name", "hull", "points"), ("SHIP", "HULL", "POINTS"), (170, 180, 65))
+        self.ships = self.tree(left, ("name", "hull", "number", "status", "points"), ("SHIP", "HULL", "NUMBER", "STATUS", "POINTS"), (180, 190, 85, 105, 65))
         self.ships.bind("<<TreeviewSelect>>", self.select_ship)
         buttons = ttk.Frame(left)
         buttons.pack(fill="x", pady=10)
+        ttk.Button(buttons, text="Buy hull", command=self.add_hull, style="Accent.TButton").pack(side="left", padx=(0, 8))
+        ttk.Button(buttons, text="Sell hull", command=self.sell_hull).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="Create 3-ship test fleet", command=self.create_test_fleet).pack(side="left", padx=(0, 8))
         ttk.Label(right, text="SHIP DETAILS", foreground=ACCENT).pack(anchor="w")
         row = ttk.Frame(right)
@@ -254,8 +258,10 @@ class App(tk.Tk):
         ttk.Button(right, text="Save ship details", command=self.save_ship).pack(anchor="w", pady=8)
         ttk.Label(right, text="Refit equipment in the native game editor.", style="Muted.TLabel").pack(anchor="w", pady=(8, 4))
         self.loadouts = ttk.Combobox(right, state="readonly", width=45)
-        ttk.Button(right, text="Refit fleet → NEBULOUS", command=self.start_refit, style="Accent.TButton").pack(anchor="w", pady=8)
-        ttk.Label(right, text="Buy spare equipment in Inventory before opening a refit.", style="Muted.TLabel").pack(anchor="w")
+        self.refit_selected_button = ttk.Button(right, text="Refit selected hull → NEBULOUS", command=self.start_selected_refit)
+        self.refit_selected_button.pack(anchor="w", pady=8)
+        ttk.Button(right, text="Refit whole fleet → NEBULOUS", command=self.start_refit).pack(anchor="w", pady=(0, 8))
+        ttk.Label(right, text="Buy spare equipment in Inventory before opening a refit. Whole-fleet refit is limited to ten hulls; individual hulls can always be refitted.", style="Muted.TLabel", wraplength=440).pack(anchor="w")
         self.equipment = self.tree(right, ("component", "contents"), ("INSTALLED EQUIPMENT", "LOAD"), (250, 150), height=4)
         self.build_refit_tabs()
         self.build_settings_screen()
@@ -588,7 +594,11 @@ class App(tk.Tk):
     def refresh_refit(self):
         active = self.refits.active
         busy = bool(self.campaign.pending_action())
-        self.refit_start_button.configure(state="disabled" if busy else "normal")
+        roster = self.campaign.player
+        whole_ready = bool(roster and 1 <= len(roster.ships) <= 10)
+        selected_ready = bool(roster and self.selected is not None and 0 <= self.selected < len(roster.ships))
+        self.refit_start_button.configure(state="disabled" if busy or not whole_ready else "normal")
+        self.refit_selected_button.configure(state="disabled" if busy or not selected_ready else "normal")
         self.refit_resume_button.configure(state="normal" if active else "disabled")
         self.refit_cancel_button.configure(state="normal" if active else "disabled")
         self.refit_confirm_button.configure(state="normal" if active and active["stage"] == "review" else "disabled")
@@ -717,14 +727,30 @@ class App(tk.Tk):
             self.campaign_info.set("No campaign created. Use New Campaign to begin.")
         self.ships.delete(*self.ships.get_children())
         f = self.campaign.player
-        if f:
-            self.fleet_info.configure(text=f"{f.name}  /  {f.faction.replace('Stock/', '')}  /  {len(f.ships)} ships  /  ~{f.points:,} points")
+        if f and f.ships:
+            states = self.campaign.state.get("ship_state", {})
+            ready = 0
             for i, s in enumerate(f.ships):
-                self.ships.insert("", "end", iid=str(i), values=(s.findtext("Name"), s.findtext("HullType", "").replace("Stock/", ""), s.findtext("Cost")))
-            if f.ships:
-                self.ships.selection_set(str(min(self.selected or 0, len(f.ships) - 1)))
+                key = s.findtext("Key", "")
+                item = states.get(key, {})
+                status = item.get("status", "ready")
+                condition = float(item.get("condition", 1.0) or 0)
+                if status == "ready" and condition < 1:
+                    status = "damaged"
+                if status == "ready":
+                    ready += 1
+                label = "Lost" if status == "lost" else f"Damaged {condition:.0%}" if status == "damaged" else status.title()
+                self.ships.insert("", "end", iid=str(i), values=(s.findtext("Name"), s.findtext("HullType", "").replace("Stock/", ""), s.findtext("Number", ""), label, s.findtext("Cost")))
+            suffix = "  /  deployment selection needed above ten" if len(f.ships) > 10 else ""
+            self.fleet_info.configure(text=f"{f.name}  /  {f.faction.replace('Stock/', '')}  /  {len(f.ships)} owned hulls  /  {ready} ready  /  ~{f.points:,} points{suffix}")
+            self.ships.selection_set(str(min(self.selected or 0, len(f.ships) - 1)))
+            self.select_ship()
         else:
-            self.fleet_info.configure(text="No campaign fleet loaded.")
+            self.selected = None
+            self.name.set("")
+            self.number.set("")
+            self.equipment.delete(*self.equipment.get_children())
+            self.fleet_info.configure(text="No hulls owned. Use Buy hull to purchase a hull from the native catalogue.")
         self.enemies.delete(*self.enemies.get_children())
         if self.campaign.enemy:
             e = self.campaign.enemy
@@ -737,7 +763,7 @@ class App(tk.Tk):
         for b in reversed(self.campaign.state["battles"]):
             self.history.insert("", "end", iid=b["id"], values=(b["created"][:19].replace("T", " ") + " UTC", b.get("outcome", b["status"]), b.get("duration", "—"), b["id"]))
         busy = bool(self.campaign.pending_action())
-        self.run_button.configure(state="disabled" if busy or not self.campaign.player or not self.campaign.enemy else "normal")
+        self.run_button.configure(state="disabled" if busy or not self.campaign.can_deploy() or not self.campaign.enemy else "normal")
         self.generate_button.configure(state="disabled" if busy or not self.campaign.has_campaign else "normal")
         self._refresh_menu()
         self.refresh_inventory()
@@ -745,9 +771,13 @@ class App(tk.Tk):
 
     def select_ship(self, event=None):
         selection = self.ships.selection()
-        if not selection:
+        if not selection or not self.campaign.player:
+            if hasattr(self, "refit_selected_button"):
+                self.refit_selected_button.configure(state="disabled")
             return
         self.selected = int(selection[0])
+        if not 0 <= self.selected < len(self.campaign.player.ships):
+            return
         ship = self.campaign.player.ships[self.selected]
         self.name.set(ship.findtext("Name", ""))
         self.number.set(ship.findtext("Number", "0"))
@@ -759,6 +789,8 @@ class App(tk.Tk):
             loads = socket.findall(".//MagSaveData")
             contents = ", ".join(f"{m.findtext('Quantity', '?')} {m.findtext('MunitionKey', '').replace('Stock/', '')}" for m in loads)
             self.equipment.insert("", "end", iid=str(i), values=(socket.findtext("ComponentName", "").replace("Stock/", ""), contents))
+        if hasattr(self, "refit_selected_button"):
+            self.refit_selected_button.configure(state="disabled" if self.campaign.pending_action() else "normal")
 
     def load_template(self):
         def action():
@@ -784,6 +816,7 @@ class App(tk.Tk):
             self.campaign.player = f
             self.templates.append(f.clone())
             self.template_choice["values"] = [f"{x.name} · {len(x.ships)} ships · {x.points} pts" for x in self.templates]
+            self.selected = 0
             self.campaign.save_fleets()
             self.refresh()
         self.guarded(action)
@@ -791,25 +824,68 @@ class App(tk.Tk):
     def save_ship(self):
         def action():
             self.editable()
-            if self.selected is None:
-                return
-            number = int(self.number.get())
-            if not 0 <= number <= 2147483647:
-                raise ValueError("Hull number must be a non-negative integer.")
-            f = self.campaign.player.clone()
-            put(f.ships[self.selected], "Name", self.name.get().strip())
-            put(f.ships[self.selected], "Number", number)
-            f.validate()
-            self.campaign.player = f
-            self.campaign.save_fleets()
+            if self.selected is None or not self.campaign.player:
+                raise ValueError("Select a hull first.")
+            ship = self.campaign.player.ships[self.selected]
+            self.campaign.rename_owned_hull(ship.findtext("Key"), self.name.get(), self.number.get())
             self.refresh()
-            self.status.set("Ship details saved.")
+            self.status.set("Hull details saved.")
+        self.guarded(action)
+
+    def add_hull(self):
+        def action():
+            self.editable()
+            path = self.campaign.exchange / "fitting-catalog.xml"
+            if not path.exists():
+                raise ValueError("The native fitting catalogue is missing. Start NEBULOUS once with the bridge installed and enabled, then try again.")
+            try:
+                catalog = Catalog.load(path)
+            except CatalogError as exc:
+                raise ValueError(str(exc)) from exc
+            HullPurchaseDialog(self, catalog)
+        self.guarded(action)
+
+    def create_hull(self, faction, hull, name, number):
+        ship = empty_ship(hull, name, number)
+        key = self.campaign.add_owned_hull(faction, ship, name=name, number=number)
+        self.selected = next((i for i, s in enumerate(self.campaign.player.ships) if s.findtext("Key") == key), 0)
+        self.refresh()
+        self.status.set(f"{name} added to the campaign roster. Refit the hull to install equipment.")
+
+    def sell_hull(self):
+        def action():
+            self.editable()
+            if self.selected is None or not self.campaign.player:
+                raise ValueError("Select a hull to sell.")
+            ship = self.campaign.player.ships[self.selected]
+            name = ship.findtext("Name", "this hull")
+            if not messagebox.askyesno("Sell hull", f"Sell {name}? Its installed components will be returned to spare inventory. No credits are refunded.", parent=self):
+                return
+            returned = self.campaign.sell_owned_hull(ship.findtext("Key"))
+            self.selected = min(self.selected, max(0, len(self.campaign.player.ships) - 1))
+            self.refresh()
+            self.status.set(f"Sold {name}. Returned {sum(returned.values())} installed component(s) to inventory.")
+        self.guarded(action)
+
+    def start_selected_refit(self):
+        def action():
+            if self.selected is None or not self.campaign.player:
+                raise ValueError("Select a hull to refit.")
+            ship = self.campaign.player.ships[self.selected]
+            self.refits.start(ship_keys=[ship.findtext("Key")])
+            self.refresh()
+            self.tabs.select(self.refit_tab)
+            self.status.set("Starting NEBULOUS and opening the selected hull in the fleet editor…")
         self.guarded(action)
 
     def export(self):
         path = filedialog.asksaveasfilename(defaultextension=".fleet", initialfile="NBC Player.fleet", filetypes=[("NEBULOUS fleet", "*.fleet")])
         if path:
-            self.guarded(lambda: self.campaign.player.save(path))
+            def action():
+                if not self.campaign.player or not self.campaign.can_deploy():
+                    raise ValueError("Export requires 1–10 ships. Mission deployment selection is not implemented yet.")
+                self.campaign.player.save(path)
+            self.guarded(action)
             self.status.set(f"Exported {path}")
 
     def generate(self):
@@ -1262,6 +1338,169 @@ class NewCampaignDialog(tk.Toplevel):
             self._preview()
             self.message.set(str(exc))
             messagebox.showerror("New campaign", str(exc), parent=self)
+            return
+        self.grab_release()
+        self.destroy()
+
+    def cancel(self):
+        if self.busy:
+            return
+        self.grab_release()
+        self.destroy()
+
+
+class HullPurchaseDialog(tk.Toplevel):
+    """Choose a native hull and add an empty ship to the campaign roster."""
+
+    def __init__(self, app, catalog):
+        super().__init__(app)
+        self.app = app
+        self.catalog = catalog
+        self.busy = False
+        self.hull_rows = []
+        self.faction = app.campaign.metadata.get("faction")
+        self.title("Buy hull")
+        self.configure(bg=BG)
+        self.transient(app)
+        self.resizable(True, True)
+        self.protocol("WM_DELETE_WINDOW", self.cancel)
+        self._build()
+        self._refresh_hulls()
+        self.update_idletasks()
+        screen_width, screen_height = self.winfo_screenwidth(), self.winfo_screenheight()
+        width = min(max(900, self.winfo_reqwidth() + 24), max(760, screen_width - 120))
+        height = min(max(600, self.winfo_reqheight() + 24), max(480, screen_height - 120))
+        x = app.winfo_rootx() + max(0, (app.winfo_width() - width) // 2)
+        y = app.winfo_rooty() + max(0, (app.winfo_height() - height) // 2)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+        self.minsize(min(800, width), min(480, height))
+        self.grab_set()
+        self.lift()
+        self.name_entry.focus_set()
+
+    def _build(self):
+        shell = ttk.Frame(self, padding=24)
+        shell.pack(fill="both", expand=True)
+        ttk.Label(shell, text="BUY HULL", foreground=ACCENT, font=("Segoe UI Semibold", 10)).pack(anchor="w")
+        ttk.Label(shell, text="Choose a hull for your campaign", style="Title.TLabel").pack(anchor="w", pady=(4, 3))
+        ttk.Label(
+            shell,
+            text=f"Showing {self.faction.replace('Stock/', '')} hulls only, the faction selected when this campaign began. Hulls are added empty; no credits are charged in this prototype.",
+            style="Muted.TLabel",
+            wraplength=800,
+        ).pack(anchor="w")
+
+        form = ttk.Frame(shell)
+        form.pack(fill="x", pady=(18, 8))
+        form.columnconfigure(1, weight=1)
+        self.name = tk.StringVar()
+        self.number = tk.StringVar()
+        self.name_entry = ttk.Entry(form, textvariable=self.name)
+        number_entry = ttk.Entry(form, textvariable=self.number, width=12)
+        for index, (label, widget) in enumerate(
+            (("Hull name", self.name_entry), ("Hull number", number_entry))
+        ):
+            ttk.Label(form, text=label).grid(row=index, column=0, sticky="w", padx=(0, 14), pady=6)
+            widget.grid(row=index, column=1, sticky="ew", pady=6)
+
+        self.hulls = self.app.tree(shell, ("name", "class", "points", "sockets"), ("HULL", "CLASS", "POINTS", "SOCKETS"), (330, 180, 90, 90), height=8)
+        self.hulls.bind("<<TreeviewSelect>>", self._select_hull)
+        self.message = tk.StringVar(value="")
+        ttk.Label(shell, textvariable=self.message, foreground=ACCENT, wraplength=800).pack(anchor="w", pady=8)
+
+        actions = ttk.Frame(shell)
+        actions.pack(side="bottom", fill="x", pady=(12, 0))
+        self.add_button = ttk.Button(actions, text="Buy hull", command=self.add, style="Accent.TButton")
+        self.add_button.pack(side="left")
+        ttk.Button(actions, text="Cancel", command=self.cancel).pack(side="left", padx=10)
+
+    def _existing_names(self):
+        if not self.app.campaign.player:
+            return set()
+        return {s.findtext("Name", "").strip().casefold() for s in self.app.campaign.player.ships}
+
+    def _existing_numbers(self):
+        if not self.app.campaign.player:
+            return set()
+        return {int(s.findtext("Number", "0") or 0) for s in self.app.campaign.player.ships}
+
+    def _unique_name(self, base):
+        names = self._existing_names()
+        base = base.strip() or "New Hull"
+        if base.casefold() not in names:
+            return base
+        suffix = 2
+        while f"{base} {suffix}".casefold() in names:
+            suffix += 1
+        return f"{base} {suffix}"
+
+    def _unique_number(self):
+        numbers = self._existing_numbers()
+        for _ in range(2000):
+            value = random.randint(100, 9999)
+            if value not in numbers:
+                return value
+        value = 100
+        while value in numbers:
+            value += 1
+        return value
+
+    def _refresh_hulls(self, event=None):
+        self.hulls.delete(*self.hulls.get_children())
+        self.hull_rows = []
+        faction = self.catalog.factions.get(self.faction)
+        if faction is None:
+            self.message.set("The campaign faction is missing from the native fitting catalogue.")
+            self.add_button.configure(state="disabled")
+            return
+        self.hull_rows = sorted(faction.hulls, key=lambda h: (h.class_name.casefold(), h.name.casefold(), h.points))
+        for index, hull in enumerate(self.hull_rows):
+            self.hulls.insert("", "end", iid=str(index), values=(hull.name, hull.class_name, hull.points, len(hull.sockets)))
+        if self.hull_rows:
+            self.hulls.selection_set("0")
+            self._select_hull()
+            self.message.set("")
+            self.add_button.configure(state="normal")
+        else:
+            self.message.set("This faction has no usable hulls in the native catalogue.")
+            self.add_button.configure(state="disabled")
+
+    def _select_hull(self, event=None):
+        selection = self.hulls.selection()
+        if not selection:
+            return
+        index = int(selection[0])
+        if not 0 <= index < len(self.hull_rows):
+            return
+        hull = self.hull_rows[index]
+        self.name.set(self._unique_name(hull.name))
+        self.number.set(str(self._unique_number()))
+
+    def add(self):
+        if self.busy:
+            return
+        try:
+            selection = self.hulls.selection()
+            if not selection:
+                raise ValueError("Choose a hull.")
+            hull = self.hull_rows[int(selection[0])]
+            name = self.name.get().strip()
+            if not name:
+                raise ValueError("Enter a hull name.")
+            number = int(self.number.get())
+        except (ValueError, IndexError) as exc:
+            self.message.set(str(exc))
+            messagebox.showerror("Buy hull", str(exc), parent=self)
+            return
+        self.busy = True
+        self.add_button.configure(state="disabled")
+        try:
+            self.app.create_hull(self.faction, hull, name, number)
+        except Exception as exc:
+            self.busy = False
+            self.add_button.configure(state="normal")
+            self.message.set(str(exc))
+            messagebox.showerror("Buy hull", str(exc), parent=self)
             return
         self.grab_release()
         self.destroy()

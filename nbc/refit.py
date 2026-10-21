@@ -1,5 +1,6 @@
 """Inventory and refit transactions. The campaign JSON is the commit boundary."""
 from collections import Counter
+import copy
 import hashlib
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -84,18 +85,32 @@ class RefitService:
         with self.c.transaction():
             self.c.state["inventory"] = inventory
 
-    def start(self, launch=True):
+    def start(self, launch=True, ship_keys=None):
         self.ensure_idle()
-        if not self.c.player:
-            raise ValueError("Load a campaign fleet first.")
+        if not self.c.player or not self.c.player.ships:
+            raise ValueError("Add or load a campaign hull first.")
         self.c.save_fleets()
+        baseline = self.c.player.clone()
+        keys = None
+        if ship_keys is not None:
+            keys = list(dict.fromkeys(str(key) for key in ship_keys))
+            if not keys:
+                raise ValueError("Select at least one hull to refit.")
+            container = baseline.root.find("Ships")
+            for ship in list(baseline.ships):
+                if ship.findtext("Key") not in keys:
+                    container.remove(ship)
+            if len(baseline.ships) != len(keys):
+                raise ValueError("The selected hull is no longer in the campaign roster.")
+        baseline.validate()
         session_id = str(uuid.uuid4())
         directory = self.c.data / "refits" / session_id
         directory.mkdir(parents=True)
-        self.c.player.save(directory / "baseline.fleet")
-        self.c.player.save(directory / "input-1.fleet")
+        baseline.save(directory / "baseline.fleet")
+        baseline.save(directory / "input-1.fleet")
         record = {"id": session_id, "directory": str(directory.resolve()), "revision": 1,
-                  "stage": "editor", "created": now(), "inventory": dict(self.c.state["inventory"])}
+                  "stage": "editor", "created": now(), "inventory": dict(self.c.state["inventory"]),
+                  "ship_keys": keys}
         self.c.state["active_refit"] = record
         self.c.persist()
         try:
@@ -179,19 +194,40 @@ class RefitService:
                 changes.append((ship.findtext("Name"), "Identity", old.findtext("Name"), ship.findtext("Name")))
         return draft, inventory, changes
 
+    def _merge_draft(self, draft):
+        """Apply a selected-hull refit draft back onto the full campaign roster."""
+        if not self.c.player:
+            raise ValueError("The campaign roster is no longer available.")
+        current = self.c.player.clone()
+        container = current.root.find("Ships")
+        proposed = {ship.findtext("Key"): ship for ship in draft.ships}
+        replaced = set()
+        for index, old in enumerate(list(current.ships)):
+            key = old.findtext("Key")
+            if key in proposed:
+                container.remove(old)
+                container.insert(index, copy.deepcopy(proposed[key]))
+                replaced.add(key)
+        if replaced != set(proposed):
+            raise ValueError("Refit result contains a hull outside the campaign roster.")
+        current.validate(max_ships=None, allow_empty=True)
+        return current
+
     def confirm(self):
         if not self.active or self.active["stage"] != "review":
             raise ValueError("Return from the game editor before confirming.")
         draft, inventory, changes = self.review()
         record = dict(self.active, stage="confirmed", completed=now(), changes=len(changes))
+        merged = self._merge_draft(draft)
         with self.c.transaction():  # Fleet, inventory and session completion commit in one replacement.
             self.c.state["inventory"] = inventory
-            self.c.state["player_xml"] = ET.tostring(draft.root, encoding="unicode")
+            self.c.state["player_xml"] = ET.tostring(merged.root, encoding="unicode")
             self.c.state["active_refit"] = None
             self.c.state["refits"].append(record)
-            self.c.sync_ship_state(draft)
-        self.c.player = draft
-        draft.save(self.c.data / "player.fleet")  # Derived export; JSON remains authoritative.
+            self.c.sync_ship_state(merged)
+            self.c.sync_owned_hulls(merged)
+        self.c.player = merged
+        merged.save(self.c.data / "player.fleet", max_ships=None, allow_empty=True)  # Derived export; JSON remains authoritative.
         return changes
 
     def resume(self, launch=True):

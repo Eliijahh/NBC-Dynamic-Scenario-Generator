@@ -21,6 +21,13 @@ def sample(name="Test Fleet", faction="Stock/Alliance"):
     return Fleet(root)
 
 
+def empty_hull(name, number, hull="Stock/Raines Frigate"):
+    return ET.fromstring(
+        f"<Ship><Key>{uuid.uuid4()}</Key><Name>{name}</Name><Cost>100</Cost>"
+        f"<Number>{number}</Number><HullType>{hull}</HullType><SocketMap /></Ship>"
+    )
+
+
 class FleetTests(unittest.TestCase):
     def test_round_trip_preserves_unknown_xml(self):
         with tempfile.TemporaryDirectory() as d:
@@ -120,12 +127,117 @@ class CampaignSetupTests(unittest.TestCase):
         self.assertEqual(restarted.state["version"], STATE_VERSION)
         self.assertEqual(restarted.campaign_status, "active")
         self.assertEqual(restarted.credits, DEFAULT_STARTING_CREDITS)
-        self.assertEqual(restarted.state["owned_hulls"], {})
+        ship_key = restarted.player.ships[0].findtext("Key")
+        owned = restarted.state["owned_hulls"][ship_key]
+        self.assertEqual(owned["hull"], "Stock/Raines Frigate")
+        self.assertEqual(owned["name"], "Resolute")
+        self.assertEqual(owned["number"], 42)
+        self.assertIn("<Name>Resolute</Name>", owned["ship"])
         self.assertEqual(restarted.state["mission_offers"], [])
         self.assertIsNone(restarted.state["accepted_mission"])
-        ship_key = restarted.player.ships[0].findtext("Key")
         self.assertEqual(restarted.state["ship_state"][ship_key], {"condition": 1.0, "status": "ready"})
         self.assertIsNone(restarted.pending_action())
+
+    def test_owned_hulls_are_unlimited_and_survive_restart(self):
+        self.campaign.start_new_campaign(
+            "Hull Watch", "Cmdr Vale", "Stock/Alliance", 1000, sample("Hull Starter")
+        )
+        starter_key = self.campaign.player.ships[0].findtext("Key")
+        for index in range(11):
+            self.campaign.add_owned_hull(
+                "Stock/Alliance", empty_hull(f"Auxiliary {index + 1}", 100 + index), name=f"Auxiliary {index + 1}", number=100 + index
+            )
+
+        self.assertEqual(len(self.campaign.player.ships), 12)
+        self.assertEqual(len(self.campaign.state["owned_hulls"]), 12)
+        self.assertFalse(self.campaign.can_deploy())
+
+        restarted = Campaign(self.campaign.game, self.campaign.data)
+        self.assertEqual(len(restarted.player.ships), 12)
+        self.assertEqual(len(restarted.state["owned_hulls"]), 12)
+        self.assertEqual(restarted.player.ships[0].findtext("Key"), starter_key)
+
+    def test_owned_hull_identity_faction_and_empty_loadout_are_guarded(self):
+        self.campaign.start_new_campaign(
+            "Guard Watch", "Cmdr Vale", "Stock/Alliance", 1000, sample("Guard Starter")
+        )
+        self.campaign.add_owned_hull("Stock/Alliance", empty_hull("Auxiliary", 100), name="Auxiliary", number=100)
+        with self.assertRaisesRegex(ValueError, "unique"):
+            self.campaign.add_owned_hull("Stock/Alliance", empty_hull("Auxiliary", 101), name="Auxiliary", number=101)
+        with self.assertRaisesRegex(ValueError, "unique"):
+            self.campaign.add_owned_hull("Stock/Alliance", empty_hull("Auxiliary 2", 100), name="Auxiliary 2", number=100)
+        with self.assertRaisesRegex(ValueError, "faction"):
+            self.campaign.add_owned_hull("Stock/Protectorate", empty_hull("Foreign", 102), name="Foreign", number=102)
+        loaded = empty_hull("Loaded", 103)
+        socket = ET.SubElement(loaded.find("SocketMap"), "HullSocket")
+        ET.SubElement(socket, "Key").text = "socket"
+        ET.SubElement(socket, "ComponentName").text = "Stock/Mk62 Cannon"
+        with self.assertRaisesRegex(ValueError, "empty"):
+            self.campaign.add_owned_hull("Stock/Alliance", loaded, name="Loaded", number=103)
+
+    def test_sell_hull_returns_components_and_allows_an_empty_roster(self):
+        self.campaign.start_new_campaign(
+            "Sale Watch", "Cmdr Vale", "Stock/Alliance", 1000, sample("Sale Starter")
+        )
+        first_key = self.campaign.player.ships[0].findtext("Key")
+        self.campaign.add_owned_hull("Stock/Alliance", empty_hull("Auxiliary", 100), name="Auxiliary", number=100)
+        self.campaign.add_owned_hull("Stock/Alliance", empty_hull("Tender", 101), name="Tender", number=101)
+
+        returned = self.campaign.sell_owned_hull(first_key)
+        self.assertEqual(returned, {"Stock/Mk62 Cannon": 1})
+        self.assertEqual(self.campaign.state["inventory"]["Stock/Mk62 Cannon"], 1)
+        self.assertNotIn(first_key, self.campaign.state["owned_hulls"])
+        self.assertNotIn(first_key, self.campaign.state["ship_state"])
+
+        self.campaign.sell_owned_hull(self.campaign.player.ships[0].findtext("Key"))
+        self.campaign.sell_owned_hull(self.campaign.player.ships[0].findtext("Key"))
+        self.assertEqual(self.campaign.player.ships, [])
+        self.assertEqual(self.campaign.state["owned_hulls"], {})
+        self.assertEqual(self.campaign.state["ship_state"], {})
+        self.assertFalse(self.campaign.can_deploy())
+
+        restarted = Campaign(self.campaign.game, self.campaign.data)
+        self.assertEqual(restarted.player.ships, [])
+        self.assertEqual(restarted.state["owned_hulls"], {})
+        self.assertEqual(restarted.state["inventory"]["Stock/Mk62 Cannon"], 1)
+
+    def test_existing_v2_roster_is_backfilled_into_owned_hulls(self):
+        data = self.root / "owned-hull-migration"
+        data.mkdir()
+        fleet = sample("Migrated Roster")
+        (data / "campaign.json").write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "campaign": {"name": "Migrated", "faction": "Stock/Alliance", "credits": 7},
+                    "campaign_status": "active",
+                    "player_xml": ET.tostring(fleet.root, encoding="unicode"),
+                    "battles": [],
+                    "ship_results": {},
+                    "ship_state": {},
+                    "owned_hulls": {},
+                    "mission_offers": [],
+                    "accepted_mission": None,
+                    "active_battle": None,
+                    "inventory": {},
+                    "active_refit": None,
+                    "refits": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        campaign = Campaign(self.campaign.game, data)
+
+        key = fleet.ships[0].findtext("Key")
+        self.assertEqual(campaign.state["owned_hulls"][key]["name"], "Resolute")
+        self.assertEqual(campaign.player.ships[0].findtext("Key"), key)
+        backups = list((data / "campaign-backups").iterdir())
+        self.assertEqual(len(backups), 1)
+        self.assertIn("owned-hulls", backups[0].name)
+
+        Campaign(self.campaign.game, data)
+        self.assertEqual(len(list((data / "campaign-backups").iterdir())), 1)
 
     def test_schema_migration_from_v1_backs_up_and_preserves_data(self):
         data = self.root / "migrated"

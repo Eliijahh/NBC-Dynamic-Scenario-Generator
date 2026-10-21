@@ -621,6 +621,21 @@ def _deterministic_uuid(rng):
     return str(uuid.UUID(int=rng.getrandbits(128), version=4))
 
 
+def empty_ship(hull, name, number, key=None):
+    """Create a native ship record for an owned hull with no installed parts."""
+    ship = ET.Element("Ship")
+    put(ship, "Key", key or str(uuid.uuid4()))
+    put(ship, "Name", name)
+    put(ship, "Cost", hull.points)
+    put(ship, "Callsign", "")
+    put(ship, "Number", int(number))
+    put(ship, "SymbolOption", 0)
+    put(ship, "HullType", hull.key)
+    ET.SubElement(ship, "ModDependencies")
+    ET.SubElement(ship, "SocketMap")
+    return ship
+
+
 def _ship_xml(plan, rng, index):
     ship = ET.Element("Ship")
     put(ship, "Key", _deterministic_uuid(rng))

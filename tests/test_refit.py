@@ -99,6 +99,28 @@ class RefitTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.service.confirm()
 
+    def test_selected_hull_refit_merges_only_that_hull(self):
+        self.service.trade("Stock/Radar", 1)
+        key = self.c.player.ships[1].findtext("Key")
+        untouched = ET.tostring(self.c.player.ships[0])
+        self.service.start(launch=False, ship_keys=[key])
+        baseline = Fleet.load(Path(self.service.active["directory"]) / "baseline.fleet")
+        self.assertEqual(len(baseline.ships), 1)
+        draft = baseline.clone()
+        put(draft.ships[0].find("SocketMap/HullSocket"), "ComponentName", "Stock/Radar")
+        self.ready(draft)
+        self.assertTrue(self.service.collect())
+        self.service.confirm()
+
+        self.assertEqual(len(self.c.player.ships), 3)
+        self.assertEqual(self.c.player.ships[1].findtext("SocketMap/HullSocket/ComponentName"), "Stock/Radar")
+        self.assertEqual(ET.tostring(self.c.player.ships[0]), untouched)
+        self.assertIn("Stock/Radar", self.c.state["owned_hulls"][key]["ship"])
+
+        restarted = Campaign(self.c.game, self.c.data)
+        self.assertEqual(len(restarted.player.ships), 3)
+        self.assertEqual(installed(restarted.player)["Stock/Radar"], 1)
+
     def test_trade_battle_and_roster_edit_locked_during_refit(self):
         self.service.start(launch=False)
         with self.assertRaises(ValueError):

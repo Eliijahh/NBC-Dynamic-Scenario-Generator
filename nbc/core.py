@@ -92,9 +92,12 @@ class Fleet:
     def clone(self):
         return Fleet(copy.deepcopy(self.root), self.source)
 
-    def validate(self):
-        if not 1 <= len(self.ships) <= 10:
-            raise ValueError("A fleet must contain 1–10 ships.")
+    def validate(self, max_ships=10, allow_empty=False):
+        count = len(self.ships)
+        if count == 0 and not allow_empty:
+            raise ValueError("A fleet must contain at least one ship.")
+        if max_ships is not None and count > max_ships:
+            raise ValueError(f"A fleet can contain at most {max_ships} ships.")
         keys, names = set(), set()
         for ship in self.ships:
             key = ship.findtext("Key")
@@ -108,8 +111,8 @@ class Fleet:
             keys.add(key)
         put(self.root, "TotalPoints", self.points)
 
-    def save(self, path):
-        self.validate()
+    def save(self, path, max_ships=10, allow_empty=False):
+        self.validate(max_ships=max_ships, allow_empty=allow_empty)
         write_xml(path, self.root)
 
     def _clear_formations(self):
@@ -215,6 +218,7 @@ class Campaign:
         self.state = self._default_state()
         had_state_file = self.state_path.exists()
         before = None
+        migrated = normalized = False
         if had_state_file:
             loaded = json.loads(self.state_path.read_text(encoding="utf-8"))
             if not isinstance(loaded, dict):
@@ -238,12 +242,23 @@ class Campaign:
         self.player = Fleet(ET.fromstring(self.state["player_xml"])) if self.state.get("player_xml") else Fleet.load(self.data / "player.fleet") if (self.data / "player.fleet").exists() else None
         self.enemy = Fleet(ET.fromstring(self.state["enemy_xml"])) if self.state.get("enemy_xml") else Fleet.load(self.data / "enemy.fleet") if (self.data / "enemy.fleet").exists() else None
         self.ensure_legacy_campaign(persist=False)
+        seeded_owned = False
+        if self.state.get("owned_hulls"):
+            self.player = self._player_from_owned_hulls(self.player)
+        elif self.player is not None:
+            seeded_owned = self.sync_owned_hulls(self.player)
         self.sync_ship_state()
 
         if had_state_file and before is not None and self.state != before:
+            # Existing v2 saves that only needed their roster migrated into owned
+            # hulls get their own backup before the new shape is written.
+            if seeded_owned and not migrated and not normalized:
+                self.backup_campaign("owned-hulls")
             self.persist()
         elif not had_state_file and self.player is not None:
             self.persist()
+        if self.player is not None:
+            self.player.save(self.data / "player.fleet", max_ships=None, allow_empty=True)
 
     @staticmethod
     def _default_state():
@@ -281,6 +296,10 @@ class Campaign:
         for key in ("inventory", "owned_hulls", "ship_state", "ship_results"):
             if not isinstance(state[key], dict):
                 raise ValueError(f"Campaign {key} must be an object.")
+        for key, record in state["owned_hulls"].items():
+            if not isinstance(record, dict) or not isinstance(record.get("ship", ""), str):
+                raise ValueError("Each owned hull must contain its ship XML.")
+            uuid.UUID(str(key))
         for key in ("battles", "mission_offers", "refits"):
             if not isinstance(state[key], list):
                 raise ValueError(f"Campaign {key} must be a list.")
@@ -306,6 +325,85 @@ class Campaign:
         # left behind by an older campaign save.
         state.pop("active_generation", None)
         return state != before
+
+    def _new_roster_root(self):
+        root = ET.Element("Fleet")
+        put(root, "Name", f"{self.metadata.get('name', 'Campaign')} Roster")
+        put(root, "Version", 3)
+        put(root, "FactionKey", self.metadata.get("faction", ""))
+        ET.SubElement(root, "ModDependencies")
+        ET.SubElement(root, "Ships")
+        ET.SubElement(root, "MissileTypes")
+        ET.SubElement(root, "CraftTypes")
+        return root
+
+    def _player_from_owned_hulls(self, envelope=None):
+        """Rebuild the roster from the authoritative owned-hull records."""
+        root = copy.deepcopy(envelope.root) if envelope is not None else self._new_roster_root()
+        container = root.find("Ships")
+        if container is None:
+            container = ET.SubElement(root, "Ships")
+        for child in list(container):
+            container.remove(child)
+        for key, record in self.state["owned_hulls"].items():
+            try:
+                ship = ET.fromstring(record.get("ship", ""))
+            except ET.ParseError as exc:
+                raise ValueError(f"Owned hull {key} has invalid ship XML.") from exc
+            put(ship, "Key", key)
+            put(ship, "Name", record.get("name", ship.findtext("Name", "")))
+            put(ship, "Number", record.get("number", ship.findtext("Number", "0")))
+            put(ship, "HullType", record.get("hull", ship.findtext("HullType", "")))
+            container.append(ship)
+        player = Fleet(root)
+        player.validate(max_ships=None, allow_empty=True)
+        return player
+
+    def sync_owned_hulls(self, fleet=None, sources=None):
+        """Mirror the current roster into the owned-hull records with stable IDs."""
+        fleet = self.player if fleet is None else fleet
+        previous = self.state.get("owned_hulls") or {}
+        sources = sources or {}
+        current = {}
+        for ship in fleet.ships if fleet else ():
+            key = ship.findtext("Key")
+            uuid.UUID(key or "")
+            try:
+                number = int(ship.findtext("Number", "0") or 0)
+            except ValueError:
+                number = 0
+            record = dict(previous.get(key, {}))
+            record.update(
+                {
+                    "faction": fleet.faction,
+                    "hull": ship.findtext("HullType", ""),
+                    "name": ship.findtext("Name", ""),
+                    "number": number,
+                    "ship": ET.tostring(ship, encoding="unicode"),
+                    "acquired": record.get("acquired") or now(),
+                    "source": sources.get(key, record.get("source", "roster")),
+                    "price": record.get("price", 0),
+                }
+            )
+            current[key] = record
+        if current != self.state.get("owned_hulls"):
+            self.state["owned_hulls"] = current
+            return True
+        return False
+
+    def _commit_player(self, player, inventory=None, sources=None):
+        """Replace the roster and persist state as one rollback-safe change."""
+        before = copy.deepcopy(self.state)
+        previous = self.player
+        self.player = player
+        if inventory is not None:
+            self.state["inventory"] = inventory
+        try:
+            self.save_fleets(sources=sources)
+        except Exception:
+            self.state = before
+            self.player = previous
+            raise
 
     @property
     def exchange(self):
@@ -448,6 +546,109 @@ class Campaign:
             return True
         return False
 
+    def can_deploy(self):
+        """The game still accepts at most ten ships in one exported fleet."""
+        return bool(self.player and 1 <= len(self.player.ships) <= 10)
+
+    def add_owned_hull(self, faction, ship, name=None, number=None, source="purchase"):
+        """Add an empty, uniquely identified hull to the campaign roster."""
+        self.ensure_idle()
+        if not self.has_campaign:
+            raise ValueError("Create or load a campaign first.")
+        if faction != self.metadata.get("faction"):
+            raise ValueError("Hulls must match the campaign faction.")
+        ship = copy.deepcopy(ship)
+        key = ship.findtext("Key") or str(uuid.uuid4())
+        try:
+            uuid.UUID(key)
+        except ValueError as exc:
+            raise ValueError("The new hull needs a valid unique identity.") from exc
+        if self.player and any(s.findtext("Key") == key for s in self.player.ships):
+            raise ValueError("A hull with that identity is already owned.")
+        if not ship.findtext("HullType"):
+            raise ValueError("Choose a hull type.")
+        if ship.find("SocketMap") is None:
+            ET.SubElement(ship, "SocketMap")
+        if ship.findall("SocketMap/HullSocket"):
+            raise ValueError("Purchased hulls start empty with no components.")
+        if ship.find("ModDependencies") is None:
+            ET.SubElement(ship, "ModDependencies")
+
+        name = str(name if name is not None else ship.findtext("Name", "")).strip()
+        if not name:
+            raise ValueError("Enter a name for the new hull.")
+        existing = self.player.ships if self.player else ()
+        if any(s.findtext("Name", "").strip().casefold() == name.casefold() for s in existing):
+            raise ValueError("Hull names must be unique in the campaign.")
+        if number is None:
+            number = ship.findtext("Number", "0")
+        try:
+            number = int(number)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Hull number must be a whole number.") from exc
+        if not 0 <= number <= 2_147_483_647:
+            raise ValueError("Hull number must be a non-negative integer.")
+        if any(int(s.findtext("Number", "0") or 0) == number for s in existing):
+            raise ValueError("Hull numbers must be unique in the campaign.")
+
+        put(ship, "Key", key)
+        put(ship, "Name", name)
+        put(ship, "Number", number)
+        player = self.player.clone() if self.player else Fleet(self._new_roster_root())
+        player.root.find("Ships").append(ship)
+        player.validate(max_ships=None)
+        self._commit_player(player, sources={key: source})
+        return key
+
+    def rename_owned_hull(self, key, name, number):
+        """Rename one owned hull without changing its identity or loadout."""
+        self.ensure_idle()
+        if not self.player:
+            raise ValueError("No campaign roster is loaded.")
+        player = self.player.clone()
+        ship = next((s for s in player.ships if s.findtext("Key") == key), None)
+        if ship is None:
+            raise ValueError("That hull is not in the campaign roster.")
+        name = str(name).strip()
+        if not name:
+            raise ValueError("Enter a name for the hull.")
+        if any(s is not ship and s.findtext("Name", "").strip().casefold() == name.casefold() for s in player.ships):
+            raise ValueError("Hull names must be unique in the campaign.")
+        try:
+            number = int(number)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Hull number must be a whole number.") from exc
+        if not 0 <= number <= 2_147_483_647:
+            raise ValueError("Hull number must be a non-negative integer.")
+        if any(s is not ship and int(s.findtext("Number", "0") or 0) == number for s in player.ships):
+            raise ValueError("Hull numbers must be unique in the campaign.")
+        put(ship, "Name", name)
+        put(ship, "Number", number)
+        player.validate(max_ships=None, allow_empty=True)
+        self._commit_player(player)
+
+    def sell_owned_hull(self, key):
+        """Remove a hull, returning its installed components to spare inventory."""
+        self.ensure_idle()
+        if not self.player:
+            raise ValueError("No campaign roster is loaded.")
+        player = self.player.clone()
+        ship = next((s for s in player.ships if s.findtext("Key") == key), None)
+        if ship is None:
+            raise ValueError("That hull is not in the campaign roster.")
+        returned = {}
+        for socket in ship.findall("SocketMap/HullSocket"):
+            component = socket.findtext("ComponentName", "").strip()
+            if component:
+                returned[component] = returned.get(component, 0) + 1
+        player.root.find("Ships").remove(ship)
+        player.validate(max_ships=None, allow_empty=True)
+        inventory = dict(self.state.get("inventory") or {})
+        for component, count in returned.items():
+            inventory[component] = inventory.get(component, 0) + count
+        self._commit_player(player, inventory=inventory)
+        return returned
+
     def backup_campaign(self, reason="new-campaign"):
         """Copy the current campaign's top-level files before an explicit overwrite."""
         files = [self.state_path, self.data / "player.fleet", self.data / "enemy.fleet"]
@@ -523,20 +724,24 @@ class Campaign:
             raise
         return self.metadata
 
-    def save_fleets(self):
+    def save_fleets(self, sources=None):
         if self.player:
-            self.player.validate()
+            self.player.validate(max_ships=None, allow_empty=True)
         if self.enemy:
             self.enemy.validate()
         if self.player:
+            self.sync_owned_hulls(sources=sources)
             self.state["player_xml"] = ET.tostring(self.player.root, encoding="unicode")
+        else:
+            self.state["owned_hulls"] = {}
+            self.state["player_xml"] = ""
         if self.enemy:
             self.state["enemy_xml"] = ET.tostring(self.enemy.root, encoding="unicode")
         self.sync_ship_state()
         if self.player or self.enemy or self.has_campaign:
             self.persist()
         if self.player:
-            self.player.save(self.data / "player.fleet")
+            self.player.save(self.data / "player.fleet", max_ships=None, allow_empty=True)
         if self.enemy:
             self.enemy.save(self.data / "enemy.fleet")
 
@@ -544,6 +749,8 @@ class Campaign:
         self.ensure_no_launch()
         if not self.player or not self.enemy:
             raise ValueError("Load a player fleet and generate an enemy first.")
+        if not self.can_deploy():
+            raise ValueError("A battle export requires 1–10 ships. Select a mission deployment of ten or fewer hulls first.")
         self.save_fleets()
         battle_id = str(uuid.uuid4())
         archive = self.data / "battles" / battle_id

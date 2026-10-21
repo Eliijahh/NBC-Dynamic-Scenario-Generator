@@ -7,7 +7,7 @@ import unittest
 import xml.etree.ElementTree as ET
 
 from nbc.core import Campaign, DEFAULT_GAME
-from nbc.fitting import Catalog, Fitter, ShipPlan, build_candidate_pool, generate_fleet
+from nbc.fitting import Catalog, Fitter, ShipPlan, build_candidate_pool, empty_ship, generate_fleet
 from nbc.generation import GenerationService
 
 FIXTURE = Path(__file__).parent / "fixtures" / "fitting-catalog.xml"
@@ -80,6 +80,16 @@ class CatalogueTests(unittest.TestCase):
             weapon=dataclasses.replace(cannon.weapon, role="Offensive, Defensive"),
         )
         self.assertTrue(dual.is_offensive_weapon)
+
+    def test_empty_ship_has_identity_hull_and_no_components(self):
+        hull = self.faction.hulls[0]
+        ship = empty_ship(hull, "New Hull", 77)
+        self.assertEqual(ship.findtext("Name"), "New Hull")
+        self.assertEqual(ship.findtext("Number"), "77")
+        self.assertEqual(ship.findtext("HullType"), hull.key)
+        self.assertEqual(ship.findtext("Cost"), str(hull.points))
+        self.assertIsNotNone(ship.find("SocketMap"))
+        self.assertEqual(ship.findall("SocketMap/HullSocket"), [])
 
     def test_compounding_cost_sorts_by_base_cost_before_first_free(self):
         hull = self.faction.hulls[0]
