@@ -16,21 +16,35 @@ STATUS LEGEND
 LOCKED POC RULES AND DECISIONS
 ------------------------------
 [x] Single-player campaign only.
+
 [x] Enemy generation stays offline and uses the bridge-exported catalogue.
+
 [x] Bridge catalogue remains Format 1 at NEBULOUS/Saves/NBCBridge/fitting-catalog.xml.
+
 [x] v1 fitting scope: direct-fire weapons and bulk-magazine ammunition only.
+
 [x] No missile launchers, hangars or craft in v1.
+
 [x] Campaign uses separate credits, initially derived from native point costs.
+
 [x] Credit scale target: cheap components cost a few thousand; very expensive
     components can reach about one million; hulls range from about 100,000 to
     many millions.
+	
 [x] Destroyed ships are permanently lost.
+
 [x] Installed components on destroyed ships are lost with the ship.
+
 [x] Any damage prevents a ship from launching until repaired.
+
 [x] No maintenance costs.
+
 [x] No bankruptcy or fail-state rescue system.
+
 [x] A dead campaign is allowed; no recovery mechanics are required for this PoC.
+
 [x] No deployment limits.
+
 [x] Mission flow: accept mission -> start mission -> select ships -> confirm ->
     only the selected ships appear in battle.
 
