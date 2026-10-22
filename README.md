@@ -2,7 +2,7 @@
 
 A Windows desktop proof of concept with a shared equipment inventory, credit-priced hulls and components, per-component battle damage, permanent ship loss and automatic battle-report import.
 
-**Download:** grab the latest `NBC-Campaign-Command.exe` from the [Releases](https://github.com/Eliijahh/NBC-Dynamic-Scenario-Generator/releases/latest) page — see [Run](#run) for first-time setup.
+**Download:** grab the latest `NBC-Campaign-Command.exe` from the [Releases](https://github.com/Eliijahh/NBC-Dynamic-Scenario-Generator/releases/latest) page
 
 ## STATUS LEGEND
 
