@@ -14,7 +14,7 @@ from nbc.generation import GenerationService
 from nbc.library import CampaignLibrary
 from nbc.missions import MissionService
 from nbc.refit import RefitService, installed
-from nbc.runtime import GameRuntime
+from nbc.runtime import GameRuntime, game_processes
 
 BG, PANEL, TEXT, MUTED, ACCENT = "#101820", "#182530", "#e4edf4", "#9aafbf", "#53d4b1"
 
@@ -26,6 +26,16 @@ def mission_expiry_text(value):
     if len(text) >= 16 and text[10] == "T":
         return f"{text[:10]} {text[11:16]} UTC"
     return text
+
+
+def blend_color(start, end, ratio):
+    """Blend two #rrggbb colours; used for the menu's planet limb gradient."""
+    ratio = max(0.0, min(1.0, ratio))
+    left = tuple(int(start[index:index + 2], 16) for index in (1, 3, 5))
+    right = tuple(int(end[index:index + 2], 16) for index in (1, 3, 5))
+    return "#%02x%02x%02x" % tuple(
+        round(a + (b - a) * ratio) for a, b in zip(left, right)
+    )
 
 
 class Tooltip:
@@ -97,6 +107,7 @@ class SetupDialog(tk.Toplevel):
         self.saved = False
         self.game_path = Path(game_path)
         self.data_path = Path(data_path)
+        self.runtime = None
         self.title("NEBULOUS setup")
         self.configure(bg=BG)
         self.transient(app)
@@ -171,6 +182,19 @@ class SetupDialog(tk.Toplevel):
 
     def install(self):
         game = Path(self.game_var.get())
+        if not setup.valid_game(game):
+            self.message_var.set("Choose a valid NEBULOUS folder first.")
+            return
+        if game_processes(game / "Nebulous.exe"):
+            self.message_var.set("Close NEBULOUS first, then install the bridge.")
+            return
+        if not messagebox.askokcancel(
+            "Install / repair bridge",
+            "The bridge will be installed and enabled, then NEBULOUS will start so it can load and export "
+            "the fitting catalogue. The game closes automatically when that finishes.\n\nProceed?",
+            parent=self,
+        ):
+            return
         try:
             result = setup.install_bridge(game)
             setup.enable_mod(game)
@@ -179,21 +203,58 @@ class SetupDialog(tk.Toplevel):
             messagebox.showerror("Bridge install", str(exc), parent=self)
             return
         self.message_var.set(
-            f"Bridge {result['version']} installed and enabled. Launch NEBULOUS once to export the catalogue."
+            f"Bridge {result['version']} installed and enabled. Starting NEBULOUS to export the catalogue…"
         )
         self.refresh()
+        self._launch_catalogue(game, "Bridge installed, enabled and catalogue exported.")
 
     def open_game(self):
         game = Path(self.game_var.get())
         if not setup.valid_game(game):
             self.message_var.set("Choose a valid NEBULOUS folder first.")
             return
-        try:
-            GameRuntime(game, game / "Saves" / "NBCBridge").begin("catalog")
-        except Exception as exc:
-            self.message_var.set(str(exc))
+        if game_processes(game / "Nebulous.exe"):
+            self.message_var.set("NEBULOUS is already running.")
             return
-        self.message_var.set("Launching NEBULOUS. Return to its main menu to export the catalogue.")
+        self.message_var.set("Launching NEBULOUS to export the catalogue…")
+        self._launch_catalogue(game, "Catalogue export finished.")
+
+    def _launch_catalogue(self, game, success):
+        try:
+            self.runtime = GameRuntime(game, game / "Saves" / "NBCBridge")
+            self.runtime.begin("catalog")
+        except Exception as exc:
+            self.runtime = None
+            self.message_var.set(str(exc))
+            messagebox.showerror("Open NEBULOUS", str(exc), parent=self)
+            return
+        self.after(1000, lambda: self._poll_runtime(game, success))
+
+    def _poll_runtime(self, game, success):
+        if self.runtime is None:
+            return
+        try:
+            self.runtime.poll()
+        except Exception as exc:
+            self.runtime = None
+            self.message_var.set(str(exc))
+            messagebox.showerror("Bridge setup", str(exc), parent=self)
+            return
+        if self.runtime.purpose:
+            self.message_var.set(self.runtime.message)
+            self.after(1000, lambda: self._poll_runtime(game, success))
+            return
+        self.runtime = None
+        self.refresh()
+        status = setup.bridge_status(game)
+        if status["installed"] and status["enabled"] and status["catalogue"]:
+            self.message_var.set(success)
+            messagebox.showinfo("Bridge ready", success, parent=self)
+        else:
+            self.message_var.set(
+                "The bridge is installed and enabled, but the catalogue is not available yet. "
+                "Launch NEBULOUS once and return to its main menu."
+            )
 
     def save(self):
         game = Path(self.game_var.get())
@@ -248,6 +309,9 @@ class App(tk.Tk):
         self.loading = False
         self.debug_unlocked = False
         self.settings_visible = False
+        self.setup_return = "menu"
+        self.bridge_install_state = None
+        self.bridge_install_result = None
         self._style()
         self._build()
         self.bind_all("<Shift-X>", self._reveal_debug)
@@ -363,8 +427,10 @@ class App(tk.Tk):
         s.configure("Sub.TLabel", font=("Segoe UI Semibold", 13))
         s.configure("TButton", background="#263c4b", foreground=TEXT, padding=(12, 9))
         s.map("TButton", background=[("active", "#355669")], foreground=[("disabled", "#667985")])
+        s.configure("Menu.TButton", background="#0f1c25", foreground=TEXT, padding=(12, 14), borderwidth=1, relief="solid", bordercolor="#2a3f4c")
+        s.map("Menu.TButton", background=[("active", "#17303c")], foreground=[("disabled", "#667985")], bordercolor=[("active", "#3d6273")])
         s.configure("Accent.TButton", background=ACCENT, foreground="#092b25", font=("Segoe UI Semibold", 10))
-        s.map("Accent.TButton", background=[("active", "#83e7cc")])
+        s.map("Accent.TButton", background=[("active", "#83e7cc"), ("disabled", "#24443f")], foreground=[("disabled", "#7fae9f")])
         s.configure("Gear.TButton", background=PANEL, foreground=ACCENT, font=("Segoe UI Symbol", 13), padding=(9, 3))
         s.map("Gear.TButton", background=[("active", "#2a4354")], foreground=[("active", "#8cf0d6")])
         s.configure("Danger.TButton", background="#43262d", foreground="#ffd6dc")
@@ -380,11 +446,12 @@ class App(tk.Tk):
         s.map("TNotebook.Tab", background=[("selected", "#31515b")])
 
     def _build(self):
-        self.menu = ttk.Frame(self, padding=24)
+        self.menu = ttk.Frame(self)
         self._build_menu()
         self.main = ttk.Frame(self, padding=24)
         shell = self.main
         header = ttk.Frame(shell)
+        self.header_frame = header
         header.pack(fill="x")
         settings_bar = ttk.Frame(header)
         settings_bar.pack(side="right", anchor="n")
@@ -404,13 +471,17 @@ class App(tk.Tk):
         ttk.Label(heading, text="Your fleet. Every engagement.", style="Title.TLabel").pack(anchor="w", pady=(4, 3))
         ttk.Label(heading, text="Proof of concept  /  Native fleet editing → live skirmish → battle results", style="Muted.TLabel").pack(anchor="w")
         self.campaign_info = tk.StringVar(value="")
-        ttk.Label(shell, textvariable=self.campaign_info, foreground=MUTED, wraplength=1160).pack(anchor="w", pady=(7, 0))
+        self.campaign_info_label = ttk.Label(shell, textvariable=self.campaign_info, foreground=MUTED, wraplength=1160)
+        self.campaign_info_label.pack(anchor="w", pady=(7, 0))
         footer = ttk.Frame(shell)
+        self.footer_frame = footer
         footer.pack(side="bottom", fill="x", pady=(10, 0))
         self.status = tk.StringVar(value="Ready")
         ttk.Label(footer, textvariable=self.status, foreground=ACCENT, wraplength=1160).pack(anchor="w")
         ttk.Label(footer, text=str(self.campaign.game), style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
-        self.tabs = ttk.Notebook(shell)
+        self.content = ttk.Frame(shell)
+        self.content.pack(fill="both", expand=True)
+        self.tabs = ttk.Notebook(self.content)
         self.tabs.pack(fill="both", expand=True)
         self.fleet_tab = ttk.Frame(self.tabs, padding=(0, 12))
         self.missions_tab = ttk.Frame(self.tabs, padding=(0, 12))
@@ -478,6 +549,7 @@ class App(tk.Tk):
         self.scrap_component_button.pack(side="left")
         self.build_inventory_tab()
         self.build_settings_screen()
+        self.build_setup_screen()
 
         self.build_missions_tab()
         self.build_deployment_screen()
@@ -503,82 +575,292 @@ class App(tk.Tk):
         self.tabs.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
     def _build_menu(self):
-        self.menu.columnconfigure(0, weight=1)
-        self.menu.rowconfigure(0, weight=1)
-        center = ttk.Frame(self.menu)
-        center.grid(row=0, column=0)
-        ttk.Label(center, text="CAMPAIGN COMMAND", foreground=ACCENT, font=("Segoe UI Semibold", 10)).pack(anchor="center")
-        ttk.Label(center, text="Your fleet. Every engagement.", style="Title.TLabel").pack(anchor="center", pady=(4, 3))
-        ttk.Label(center, text="NEBULOUS campaign proof of concept", style="Muted.TLabel").pack(anchor="center")
-        self.menu_campaign_info = tk.StringVar(value="")
-        ttk.Label(center, textvariable=self.menu_campaign_info, foreground=MUTED, wraplength=520).pack(anchor="center", pady=(18, 0))
-        self.menu_setup_info = tk.StringVar(value="")
+        self.menu_canvas = tk.Canvas(self.menu, bg=BG, highlightthickness=0, bd=0)
+        self.menu_canvas.place(x=0, y=0, relwidth=1, relheight=1)
+        self.menu_content = ttk.Frame(self.menu)
+        self.menu_content.place(relx=0.5, rely=0.5, anchor="center")
+        self.menu_content.lift()
+
         ttk.Label(
-            center,
-            textvariable=self.menu_setup_info,
+            self.menu_content,
+            text="C A M P A I G N   C O M M A N D",
             foreground=ACCENT,
-            wraplength=520,
-            justify="center",
-        ).pack(anchor="center", pady=(8, 0))
-        buttons = ttk.Frame(center)
-        buttons.pack(fill="x", pady=(24, 0))
-        buttons.columnconfigure(0, weight=1)
-        self.continue_button = ttk.Button(buttons, text="Continue", command=self.continue_campaign, style="Accent.TButton", width=28)
-        self.continue_button.grid(row=0, column=0, sticky="ew", pady=5)
-        self.new_campaign_menu_button = ttk.Button(buttons, text="New Campaign", command=self.new_campaign, width=28)
-        self.new_campaign_menu_button.grid(row=1, column=0, sticky="ew", pady=5)
-        self.load_campaign_button = ttk.Button(buttons, text="Load Campaign", command=self.load_campaign, width=28)
-        self.load_campaign_button.grid(row=2, column=0, sticky="ew", pady=5)
-        self.exit_button = ttk.Button(buttons, text="Exit", command=self.close, width=28)
-        self.exit_button.grid(row=3, column=0, sticky="ew", pady=5)
-        ttk.Label(center, text=str(self.campaign.game), style="Muted.TLabel", wraplength=520).pack(anchor="center", pady=(24, 0))
+            font=("Segoe UI Semibold", 30),
+        ).pack(anchor="w")
+
+        body = ttk.Frame(self.menu_content)
+        body.pack(anchor="w", pady=(22, 0))
+        ttk.Frame(body, width=640, height=1).pack()
+
+        latest = ttk.Frame(body)
+        latest.pack(fill="x", pady=(0, 10))
+        ttk.Label(latest, text="Latest Campaign", style="Muted.TLabel").pack(side="left")
+        tk.Frame(latest, bg="#243642", height=1).pack(side="left", fill="x", expand=True, padx=(14, 0))
+
+        info = ttk.Frame(body)
+        info.pack(fill="x", pady=(0, 18))
+        for column in (0, 2, 4):
+            info.columnconfigure(column, weight=1)
+        self.menu_campaign_var = tk.StringVar(value="—")
+        self.menu_commander_var = tk.StringVar(value="—")
+        self.menu_credits_var = tk.StringVar(value="—")
+        blocks = (
+            ("campaign", "Campaign", self.menu_campaign_var),
+            ("commander", "Commander", self.menu_commander_var),
+            ("credits", "Credits", self.menu_credits_var),
+        )
+        for index, (icon, label, variable) in enumerate(blocks):
+            block = ttk.Frame(info)
+            block.grid(row=0, column=index * 2, sticky="w")
+            icon_canvas = tk.Canvas(block, width=34, height=34, bg=BG, highlightthickness=0, bd=0)
+            icon_canvas.pack(side="left", padx=(0, 12))
+            self._draw_menu_icon(icon_canvas, icon)
+            text = ttk.Frame(block)
+            text.pack(side="left")
+            ttk.Label(text, text=label, style="Muted.TLabel").pack(anchor="w")
+            ttk.Label(
+                text,
+                textvariable=variable,
+                foreground=TEXT,
+                font=("Segoe UI Semibold", 13),
+            ).pack(anchor="w")
+            if index < 2:
+                tk.Frame(info, bg="#243642", width=1).grid(
+                    row=0, column=index * 2 + 1, sticky="ns", padx=18
+                )
+
+        self.menu_bridge = tk.Frame(
+            body, bg="#0d1a22", highlightbackground="#203541", highlightthickness=1
+        )
+        self.menu_bridge.pack(fill="x", pady=(0, 18))
+        bridge_inner = tk.Frame(self.menu_bridge, bg="#0d1a22")
+        bridge_inner.pack(fill="x", padx=14, pady=12)
+        gear = tk.Canvas(
+            bridge_inner, width=38, height=38, bg="#0d1a22", highlightthickness=0, bd=0
+        )
+        gear.pack(side="left", padx=(0, 12))
+        gear.create_oval(2, 2, 36, 36, fill="#0f3b36", outline=ACCENT, width=1)
+        gear.create_text(19, 19, text="⚙", fill=ACCENT, font=("Segoe UI Symbol", 16))
+        bridge_text = tk.Frame(bridge_inner, bg="#0d1a22")
+        bridge_text.pack(side="left", fill="x", expand=True)
+        self.menu_bridge_title = tk.StringVar(value="")
+        self.menu_bridge_subtitle = tk.StringVar(value="")
+        tk.Label(
+            bridge_text,
+            textvariable=self.menu_bridge_title,
+            bg="#0d1a22",
+            fg=TEXT,
+            font=("Segoe UI Semibold", 11),
+            anchor="w",
+        ).pack(anchor="w")
+        tk.Label(
+            bridge_text,
+            textvariable=self.menu_bridge_subtitle,
+            bg="#0d1a22",
+            fg=MUTED,
+            anchor="w",
+            justify="left",
+            wraplength=380,
+        ).pack(anchor="w")
+        self.menu_bridge_button = ttk.Button(
+            bridge_inner,
+            text="Install",
+            command=self._menu_bridge_action,
+            style="Accent.TButton",
+        )
+        self.menu_bridge_button.pack(side="right", padx=(12, 0))
+
+        self.continue_button = ttk.Button(
+            body, text="Resume Campaign", command=self.continue_campaign, style="Accent.TButton"
+        )
+        self.continue_button.pack(fill="x", pady=(0, 10))
+        self.new_campaign_menu_button = ttk.Button(
+            body, text="New Campaign", command=self.new_campaign, style="Menu.TButton"
+        )
+        self.new_campaign_menu_button.pack(fill="x", pady=(0, 10))
+        self.load_campaign_button = ttk.Button(
+            body, text="Load Campaign", command=self.load_campaign, style="Menu.TButton"
+        )
+        self.load_campaign_button.pack(fill="x", pady=(0, 10))
+        self.menu_settings_button = ttk.Button(
+            body, text="Settings", command=self.open_menu_setup, style="Menu.TButton"
+        )
+        self.menu_settings_button.pack(fill="x", pady=(0, 10))
+        self.exit_button = ttk.Button(body, text="Exit", command=self.close, style="Menu.TButton")
+        self.exit_button.pack(fill="x", pady=(0, 10))
+
+        self.menu.bind("<Configure>", self._draw_menu_background)
+        self.menu_canvas.bind("<Configure>", self._draw_menu_background)
+        self.after(50, self._draw_menu_background)
+
+    def _draw_menu_icon(self, canvas, kind):
+        color = TEXT
+        if kind == "campaign":
+            canvas.create_rectangle(9, 4, 25, 30, outline=color, width=2)
+            canvas.create_line(20, 4, 20, 10, 25, 10, fill=color, width=2)
+            for y in (15, 20, 25):
+                canvas.create_line(13, y, 21, y, fill=color, width=1)
+        elif kind == "commander":
+            canvas.create_line(9, 17, 17, 9, 25, 17, fill=color, width=3)
+            canvas.create_line(9, 26, 17, 18, 25, 26, fill=color, width=3)
+        else:
+            canvas.create_oval(8, 5, 26, 13, outline=color, width=2)
+            canvas.create_line(8, 9, 8, 27, fill=color, width=2)
+            canvas.create_line(26, 9, 26, 27, fill=color, width=2)
+            canvas.create_arc(8, 21, 26, 29, start=180, extent=180, style="arc", outline=color, width=2)
+
+    def _draw_menu_background(self, event=None):
+        canvas = getattr(self, "menu_canvas", None)
+        if canvas is None:
+            return
+        width, height = canvas.winfo_width(), canvas.winfo_height()
+        if width < 20 or height < 20:
+            return
+        canvas.delete("bg")
+        canvas.create_rectangle(0, 0, width, height, fill=BG, outline="", tags="bg")
+        rng = random.Random(11)
+        for _ in range(110):
+            x = rng.uniform(0, width)
+            y = rng.uniform(0, height * 0.85)
+            radius = rng.choice([0.5, 0.7, 0.9, 1.2])
+            color = rng.choice(["#16323c", "#1f4a52", "#2e6b70", "#4d9697"])
+            canvas.create_oval(
+                x - radius,
+                y - radius,
+                x + radius,
+                y + radius,
+                fill=color,
+                outline="",
+                tags="bg",
+            )
+        cx, cy = width * 1.55, height * 0.05
+        radius = max(width * 0.82, height * 0.72)
+        steps = 40
+        for index in range(steps):
+            r = radius - index * (radius / steps)
+            color = blend_color("#0e2b34", "#050c11", index / steps)
+            canvas.create_oval(
+                cx - r, cy - r, cx + r, cy + r,
+                fill=color, outline="", tags="bg",
+            )
+        for color, line_width in (
+            ("#0d3038", 18),
+            ("#17545a", 10),
+            ("#2b8b86", 4),
+            (ACCENT, 2),
+        ):
+            canvas.create_arc(
+                cx - radius,
+                cy - radius,
+                cx + radius,
+                cy + radius,
+                start=150,
+                extent=60,
+                style="arc",
+                outline=color,
+                width=line_width,
+                tags="bg",
+            )
 
     def _refresh_menu(self):
         meta = self.campaign.metadata
         can_continue = self.campaign.has_campaign and self.campaign.player is not None
         if can_continue:
-            self.continue_button.grid()
-            self.menu_campaign_info.set(
-                f"Continue: {meta.get('name', 'Campaign')}  /  "
-                f"{meta.get('commander') or 'No commander'}  /  "
-                f"{format_credits(int(meta.get('credits', 0)))}"
+            self.menu_campaign_var.set(meta.get("name", "Campaign"))
+            self.menu_commander_var.set(meta.get("commander") or "—")
+            self.menu_credits_var.set(f"{int(meta.get('credits', 0)):,}")
+            self.continue_button.configure(state="normal")
+        else:
+            self.menu_campaign_var.set("No campaign")
+            self.menu_commander_var.set("—")
+            self.menu_credits_var.set("—")
+            self.continue_button.configure(state="disabled")
+
+        status = setup.bridge_status(self.game)
+        ready = (
+            status["game_ok"]
+            and status["installed"]
+            and status["enabled"]
+            and status["catalogue"]
+        )
+        if ready:
+            self.menu_bridge.pack_forget()
+            return
+        if not status["game_ok"]:
+            title, subtitle, label = (
+                "NEBULOUS not found",
+                "Choose your game folder to enable campaign integration.",
+                "Set up",
+            )
+        elif not status["installed"]:
+            title, subtitle, label = (
+                "Bridge not installed",
+                "Install the Bridge to enable campaign integration.",
+                "Install",
+            )
+        elif not status["enabled"]:
+            title, subtitle, label = (
+                "Bridge not enabled",
+                "Enable the Bridge to connect the campaign.",
+                "Repair",
             )
         else:
-            self.continue_button.grid_remove()
-            campaigns = self.library.list()
-            valid = sum(1 for campaign in campaigns if campaign.valid)
-            if valid:
-                self.menu_campaign_info.set(
-                    f"{valid} saved campaign{'s' if valid != 1 else ''} available."
-                )
-            elif campaigns:
-                self.menu_campaign_info.set(
-                    "Saved campaign files were found, but none are readable. Use Load Campaign for details."
-                )
-            else:
-                self.menu_campaign_info.set("No saved campaign detected.")
+            title, subtitle, label = (
+                "Catalogue not exported",
+                "Launch NEBULOUS once to export the fitting catalogue.",
+                "Launch",
+            )
+        self.menu_bridge_title.set(title)
+        self.menu_bridge_subtitle.set(subtitle)
+        self.menu_bridge_button.configure(text=label)
+        if not self.menu_bridge.winfo_manager():
+            self.menu_bridge.pack(fill="x", pady=(0, 18), before=self.continue_button)
+
+    def _menu_bridge_action(self):
         status = setup.bridge_status(self.game)
         if not status["game_ok"]:
-            self.menu_setup_info.set("NEBULOUS not found. Open Settings → NEBULOUS SETUP to set the game folder.")
-        elif not status["enabled"]:
-            self.menu_setup_info.set("Bridge not enabled. Open Settings → NEBULOUS SETUP to install or repair it.")
-        elif not status["catalogue"]:
-            self.menu_setup_info.set("Launch NEBULOUS once so the bridge can export the fitting catalogue.")
+            self.show_setup_screen("menu")
+        elif not status["installed"] or not status["enabled"]:
+            self.install_bridge_now()
         else:
-            self.menu_setup_info.set("")
+            self.open_game_now()
 
     def show_menu(self):
         self.settings_visible = False
+        self.setup_return = "menu"
+        if hasattr(self, "setup_screen"):
+            self.setup_screen.pack_forget()
         self.main.pack_forget()
         self.menu.pack(fill="both", expand=True)
         self._refresh_menu()
+
+    def open_menu_setup(self):
+        """Open the dedicated NEBULOUS setup screen from the main menu."""
+        self.show_setup_screen("menu")
+
+    def _set_chrome(self, visible):
+        """Show or hide the campaign header, campaign line and footer."""
+        if visible:
+            if not self.header_frame.winfo_manager():
+                self.header_frame.pack(fill="x", before=self.content)
+            if not self.campaign_info_label.winfo_manager():
+                self.campaign_info_label.pack(anchor="w", pady=(7, 0), before=self.content)
+            if not self.footer_frame.winfo_manager():
+                self.footer_frame.pack(side="bottom", fill="x", pady=(10, 0), before=self.content)
+        else:
+            self.header_frame.pack_forget()
+            self.campaign_info_label.pack_forget()
+            self.footer_frame.pack_forget()
 
     def show_main(self):
         self.settings_visible = False
         self.deployment_visible = False
         self.refit_visible = False
+        self._set_chrome(True)
         self.menu.pack_forget()
         self.settings_screen.pack_forget()
+        if hasattr(self, "setup_screen"):
+            self.setup_screen.pack_forget()
         if hasattr(self, "deployment_screen"):
             self.deployment_screen.pack_forget()
         if hasattr(self, "refit_screen"):
@@ -654,7 +936,7 @@ class App(tk.Tk):
         return pending
 
     def build_settings_screen(self):
-        self.settings_screen = ttk.Frame(self.main, padding=(0, 12))
+        self.settings_screen = ttk.Frame(self.content, padding=(0, 12))
         ttk.Label(
             self.settings_screen,
             text="SETTINGS",
@@ -678,8 +960,10 @@ class App(tk.Tk):
         ).pack(anchor="w", pady=(0, 16))
         actions = ttk.Frame(panel)
         actions.pack(fill="x")
-        ttk.Button(actions, text="Save now", command=self.save_campaign_now).pack(side="left", padx=(0, 8))
-        ttk.Button(actions, text="Resume", command=self.resume_campaign, style="Accent.TButton").pack(side="left", padx=(0, 8))
+        self.save_now_button = ttk.Button(actions, text="Save now", command=self.save_campaign_now)
+        self.save_now_button.pack(side="left", padx=(0, 8))
+        self.resume_settings_button = ttk.Button(actions, text="Resume", command=self.resume_campaign, style="Accent.TButton")
+        self.resume_settings_button.pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Save and exit", command=self.save_and_exit).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Exit without saving", command=self.exit_without_saving, style="Danger.TButton").pack(side="left")
         self.settings_message = tk.StringVar(value="Campaign changes are also saved automatically as you play.")
@@ -701,7 +985,7 @@ class App(tk.Tk):
         ttk.Separator(setup_panel, orient="horizontal").pack(fill="x", pady=(0, 14))
         ttk.Label(
             setup_panel,
-            text="NEBULOUS SETUP",
+            text="NEBULOUS",
             foreground=ACCENT,
             font=("Segoe UI Semibold", 10),
         ).pack(anchor="w")
@@ -713,18 +997,11 @@ class App(tk.Tk):
             wraplength=1100,
             justify="left",
         ).pack(anchor="w", pady=(4, 8))
-        setup_actions = ttk.Frame(setup_panel)
-        setup_actions.pack(fill="x")
-        ttk.Button(setup_actions, text="Detect game", command=self.detect_game_folder).pack(
-            side="left", padx=(0, 8)
-        )
-        ttk.Button(setup_actions, text="Change game folder…", command=self.change_game_folder).pack(
-            side="left", padx=(0, 8)
-        )
-        ttk.Button(setup_actions, text="Install / repair bridge", command=self.install_bridge_now).pack(
-            side="left", padx=(0, 8)
-        )
-        ttk.Button(setup_actions, text="Open NEBULOUS", command=self.open_game_now).pack(side="left")
+        ttk.Button(
+            setup_panel,
+            text="NEBULOUS setup…",
+            command=lambda: self.show_setup_screen("settings"),
+        ).pack(anchor="w")
 
         # Built hidden. SHIFT-X reveals this only while the settings screen is open.
         self.debug_section = ttk.Frame(panel)
@@ -746,6 +1023,140 @@ class App(tk.Tk):
             command=self.open_price_debug,
         ).pack(anchor="w")
         self._refresh_settings()
+
+    def build_setup_screen(self):
+        self.setup_screen = ttk.Frame(self.content, padding=(0, 12))
+        ttk.Label(
+            self.setup_screen,
+            text="NEBULOUS SETUP",
+            foreground=ACCENT,
+            font=("Segoe UI Semibold", 10),
+        ).pack(anchor="w")
+        ttk.Label(
+            self.setup_screen,
+            text="Connect Campaign Command to NEBULOUS",
+            style="Title.TLabel",
+        ).pack(anchor="w", pady=(4, 3))
+        ttk.Label(
+            self.setup_screen,
+            text=(
+                "Campaign Command installs a small bridge into the game. The bridge exports the fitting "
+                "catalogue and connects the game to your campaign."
+            ),
+            style="Muted.TLabel",
+            wraplength=1100,
+        ).pack(anchor="w", pady=(0, 16))
+
+        card = ttk.Frame(self.setup_screen, padding=22)
+        card.pack(fill="x")
+        ttk.Label(card, text="GAME FOLDER", foreground=ACCENT).pack(anchor="w")
+        row = ttk.Frame(card)
+        row.pack(fill="x", pady=(6, 16))
+        self.setup_game_var = tk.StringVar(value=str(self.game))
+        ttk.Entry(row, textvariable=self.setup_game_var, width=80).pack(
+            side="left", fill="x", expand=True, padx=(0, 8)
+        )
+        ttk.Button(row, text="Detect", command=self.detect_game_folder).pack(
+            side="left", padx=(0, 8)
+        )
+        ttk.Button(row, text="Change folder…", command=self.change_game_folder).pack(side="left")
+
+        ttk.Label(card, text="STATUS", foreground=ACCENT).pack(anchor="w")
+        self.setup_status_labels = {}
+        for key in ("game", "bridge", "enabled", "catalogue"):
+            label = ttk.Label(card, text="", foreground=MUTED, wraplength=1000)
+            label.pack(anchor="w", pady=1)
+            self.setup_status_labels[key] = label
+
+        ttk.Label(
+            card,
+            text=(
+                "Installing starts NEBULOUS once so the bridge can load and export the catalogue, "
+                "then closes the game automatically."
+            ),
+            style="Muted.TLabel",
+            wraplength=1000,
+        ).pack(anchor="w", pady=(14, 12))
+
+        actions = ttk.Frame(card)
+        actions.pack(fill="x")
+        self.setup_install_button = ttk.Button(
+            actions,
+            text="Install / repair bridge",
+            command=self.install_bridge_now,
+            style="Accent.TButton",
+        )
+        self.setup_install_button.pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="Open NEBULOUS", command=self.open_game_now).pack(
+            side="left", padx=(0, 8)
+        )
+        self.setup_back_button = ttk.Button(
+            actions, text="Back to menu", command=self.back_from_setup
+        )
+        self.setup_back_button.pack(side="right")
+
+        self.setup_message = tk.StringVar(value="")
+        ttk.Label(
+            self.setup_screen,
+            textvariable=self.setup_message,
+            foreground=ACCENT,
+            wraplength=1100,
+            justify="left",
+        ).pack(anchor="w", pady=(14, 0))
+
+    def show_setup_screen(self, return_to="menu"):
+        self.setup_return = return_to
+        self._set_chrome(False)
+        self.menu.pack_forget()
+        self.settings_screen.pack_forget()
+        self.tabs.pack_forget()
+        if hasattr(self, "deployment_screen"):
+            self.deployment_screen.pack_forget()
+        if hasattr(self, "refit_screen"):
+            self.refit_screen.pack_forget()
+        self.main.pack(fill="both", expand=True)
+        self.setup_screen.pack(fill="both", expand=True)
+        self.refresh_setup_screen()
+
+    def back_from_setup(self):
+        self.setup_screen.pack_forget()
+        if self.setup_return == "settings":
+            self.show_settings()
+        else:
+            self.show_menu()
+
+    def refresh_setup_screen(self):
+        if not hasattr(self, "setup_status_labels"):
+            return
+        self.setup_game_var.set(str(self.game))
+        status = setup.bridge_status(self.game)
+
+        def line(key, ok, text):
+            label = self.setup_status_labels[key]
+            label.configure(
+                text=("✓  " if ok else "✗  ") + text,
+                foreground=ACCENT if ok else "#ef9b9b",
+            )
+
+        line("game", status["game_ok"], f"Game folder: {status['game'] or 'not set'}")
+        line("bridge", status["installed"], f"Bridge installed: {status['installed_version'] or 'no'}")
+        line("enabled", status["enabled"], "Bridge enabled in the game's mod list")
+        line("catalogue", status["catalogue"], "Fitting catalogue exported")
+        self.setup_back_button.configure(
+            text="Back to settings" if self.setup_return == "settings" else "Back to menu"
+        )
+        if hasattr(self, "setup_install_button"):
+            self.setup_install_button.configure(
+                state="normal"
+                if status["game_ok"] and self.bridge_install_state is None
+                else "disabled"
+            )
+
+    def _set_bridge_message(self, text):
+        if hasattr(self, "setup_message"):
+            self.setup_message.set(text)
+        if hasattr(self, "settings_message"):
+            self.settings_message.set(text)
 
     def _reveal_debug(self, event=None):
         if not self.settings_visible:
@@ -770,8 +1181,19 @@ class App(tk.Tk):
                 f"{meta.get('name', 'Campaign')}  /  {meta.get('commander') or 'No commander'}  /  "
                 f"{faction}  /  {format_credits(int(meta.get('credits', 0)))}  /  {ships} ships"
             )
+        if hasattr(self, "save_now_button"):
+            self.save_now_button.configure(
+                state="normal" if self.campaign.has_campaign else "disabled"
+            )
         if hasattr(self, "setup_status"):
-            self.setup_status.set(setup.status_text(setup.bridge_status(self.game)))
+            status = setup.bridge_status(self.game)
+            parts = [
+                "game found" if status["game_ok"] else "game not found",
+                f"bridge {status['installed_version'] or 'not installed'}",
+                "enabled" if status["enabled"] else "not enabled",
+                "catalogue ready" if status["catalogue"] else "catalogue missing",
+            ]
+            self.setup_status.set(" · ".join(parts))
 
     def detect_game_folder(self):
         found = setup.detect_game()
@@ -795,34 +1217,144 @@ class App(tk.Tk):
         config["data_path"] = str(self.data_dir)
         setup.save_config(config)
         self.campaign.game = self.game
-        self.settings_message.set(f"Game folder set to {self.game}.")
+        self._set_bridge_message(f"Game folder set to {self.game}.")
         self._refresh_settings()
+        self.refresh_setup_screen()
+
+    def _sync_setup_game_path(self):
+        """Apply a folder typed into the setup screen before acting on it."""
+        if not hasattr(self, "setup_game_var"):
+            return True
+        typed = self.setup_game_var.get().strip()
+        if typed and Path(typed) != self.game:
+            if not setup.valid_game(typed):
+                self._set_bridge_message("That folder does not look like a NEBULOUS installation.")
+                return False
+            self._apply_game_path(Path(typed))
+        return True
 
     def install_bridge_now(self):
+        if not self._sync_setup_game_path():
+            return
+        if not setup.valid_game(self.game):
+            self._set_bridge_message("Set a valid NEBULOUS game folder first.")
+            messagebox.showerror("Install bridge", "Set a valid NEBULOUS game folder first.", parent=self)
+            return
+        if self.campaign.pending_action() or self.campaign.runtime.purpose:
+            self._set_bridge_message("Finish or cancel the pending operation before installing the bridge.")
+            return
+        if game_processes(self.game / "Nebulous.exe"):
+            self._set_bridge_message("Close NEBULOUS before installing the bridge.")
+            messagebox.showinfo(
+                "Close NEBULOUS",
+                "Close NEBULOUS first, then install the bridge. The game must restart to load it.",
+                parent=self,
+            )
+            return
+        if not messagebox.askokcancel(
+            "Install / repair bridge",
+            "The bridge will be installed and enabled, then NEBULOUS will start so it can load and export "
+            "the fitting catalogue. The game closes automatically when that finishes.\n\nProceed?",
+            parent=self,
+        ):
+            return
         try:
             result = setup.install_bridge(self.game)
             setup.enable_mod(self.game)
         except Exception as exc:
-            self.settings_message.set(str(exc))
+            self._set_bridge_message(str(exc))
             messagebox.showerror("Bridge install", str(exc), parent=self)
             return
-        self.settings_message.set(
-            f"Bridge {result['version']} installed and enabled. Launch NEBULOUS once to export the catalogue."
+        self.bridge_install_result = result
+        self.bridge_install_state = "launching"
+        self.bridge_install_wait = 0
+        self._set_bridge_message(
+            f"Bridge {result['version']} installed and enabled. Starting NEBULOUS to export the catalogue…"
         )
         self._refresh_settings()
-
-    def open_game_now(self):
+        self.refresh_setup_screen()
+        if hasattr(self, "menu_bridge_title"):
+            self.menu_bridge_title.set("Installing bridge…")
+            self.menu_bridge_subtitle.set(
+                "NEBULOUS is starting so the bridge can export the catalogue."
+            )
+            self.menu_bridge_button.configure(text="Working…", state="disabled")
         try:
             self.campaign.runtime.begin("catalog")
         except Exception as exc:
-            self.settings_message.set(str(exc))
+            self.bridge_install_state = None
+            self._set_bridge_message(str(exc))
+            self.refresh_setup_screen()
+            messagebox.showerror("Open NEBULOUS", str(exc), parent=self)
+            self._refresh_menu()
+            return
+        self.after(1500, self._poll_bridge_install)
+
+    def _poll_bridge_install(self):
+        if self.bridge_install_state != "launching":
+            return
+        try:
+            self.campaign.runtime.poll()
+        except Exception as exc:
+            self.bridge_install_state = None
+            self._set_bridge_message(f"Bridge setup failed: {exc}")
+            self.refresh_setup_screen()
+            messagebox.showerror("Bridge setup", str(exc), parent=self)
+            self._refresh_menu()
+            return
+        if self.campaign.runtime.purpose:
+            self._set_bridge_message(self.campaign.runtime.message)
+            self.after(1000, self._poll_bridge_install)
+            return
+        if game_processes(self.game / "Nebulous.exe"):
+            self.bridge_install_wait = getattr(self, "bridge_install_wait", 0) + 1
+            if self.bridge_install_wait <= 30:
+                self._set_bridge_message("Waiting for NEBULOUS to close…")
+                self.after(1000, self._poll_bridge_install)
+                return
+        self.bridge_install_state = None
+        status = setup.bridge_status(self.game)
+        self._refresh_settings()
+        self.refresh_setup_screen()
+        if status["installed"] and status["enabled"] and status["catalogue"]:
+            self._set_bridge_message("Bridge installed, enabled and catalogue exported.")
+            messagebox.showinfo(
+                "Bridge ready",
+                "The bridge is installed and enabled, and NEBULOUS exported the fitting catalogue. "
+                "You can now start or continue a campaign.",
+                parent=self,
+            )
+            self._refresh_menu()
+        else:
+            self._set_bridge_message(
+                "Bridge installed and enabled, but the fitting catalogue was not exported. "
+                "Launch NEBULOUS once and return to its main menu, then check again."
+            )
+            messagebox.showwarning(
+                "Bridge installed",
+                "The bridge is installed and enabled, but the fitting catalogue is not available yet. "
+                "Launch NEBULOUS once, return to its main menu, then check the status again.",
+                parent=self,
+            )
+            self._refresh_menu()
+
+    def open_game_now(self):
+        if not self._sync_setup_game_path():
+            return
+        try:
+            self.campaign.runtime.begin("catalog")
+        except Exception as exc:
+            self._set_bridge_message(str(exc))
             messagebox.showerror("Open NEBULOUS", str(exc), parent=self)
             return
-        self.settings_message.set("Launching NEBULOUS. Return to its main menu to export the catalogue.")
+        self._set_bridge_message("Launching NEBULOUS. Return to its main menu so the bridge can export the catalogue.")
 
     def show_settings(self):
         self.settings_visible = True
+        self._set_chrome(True)
         self.tabs.pack_forget()
+        if hasattr(self, "setup_screen"):
+            self.setup_screen.pack_forget()
         if hasattr(self, "deployment_screen"):
             self.deployment_screen.pack_forget()
         if hasattr(self, "refit_screen"):
@@ -1685,7 +2217,7 @@ class App(tk.Tk):
                 )
 
     def build_deployment_screen(self):
-        self.deployment_screen = ttk.Frame(self.main, padding=(0, 12))
+        self.deployment_screen = ttk.Frame(self.content, padding=(0, 12))
         ttk.Label(
             self.deployment_screen,
             text="DEPLOYMENT",
@@ -1799,6 +2331,7 @@ class App(tk.Tk):
         if not accepted:
             self.status.set("Accept a mission before deploying.")
             return
+        self._set_chrome(True)
         self.deployment_visible = True
         self.deployment_title.set(
             f"{accepted.get('name')}  ·  {(accepted.get('type') or '').title()}  ·  "
@@ -1959,7 +2492,7 @@ class App(tk.Tk):
         self.guarded(action)
 
     def build_refit_screen(self):
-        self.refit_screen = ttk.Frame(self.main, padding=(0, 12))
+        self.refit_screen = ttk.Frame(self.content, padding=(0, 12))
         ttk.Label(
             self.refit_screen,
             text="REFIT",
@@ -2014,6 +2547,7 @@ class App(tk.Tk):
         if not self.refits.active:
             self.status.set("There is no refit session to open.")
             return
+        self._set_chrome(True)
         self.refit_visible = True
         self.refresh_refit()
         self.settings_screen.pack_forget()
