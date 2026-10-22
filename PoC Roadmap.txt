@@ -38,35 +38,6 @@ LOCKED POC RULES AND DECISIONS
 [x] No deployment limits.
 [x] Mission flow: accept mission -> start mission -> select ships -> confirm ->
     only the selected ships appear in battle.
-[x] Distribution will use GitHub Release assets, not committed binaries.
-
-
-CURRENT BASELINE ALREADY IN THE PROJECT
----------------------------------------
-[x] Native .fleet import/export, ship identities, names and hull numbers.
-[x] Native refit workflow through the NEBULOUS fleet editor.
-[x] Owned-component inventory with quantities and refit validation.
-[x] Offline enemy ship fitting from the native catalogue.
-[x] Direct-fire weapons, bulk-magazine ammunition, power, crew, socket and
-    point-cost rules in the offline fitter.
-[x] Resource pruning and point-cost calculation.
-[x] Deterministic enemy candidate selection and target-budget selection.
-[x] Bridge 0.5.0 installed and detected by the runtime.
-[x] Real fitting catalogue exported successfully from NEBULOUS 0.6.2.6.
-[x] Whole-fleet battle handoff to a local skirmish.
-[x] Native battle report import with duplicate-import prevention.
-[x] Existing persistent campaign/battle state in data/campaign.json and
-    independent campaign saves under data/campaigns/<id>/.
-[x] New Campaign setup with metadata, starter fleet, starting credits and an
-    independent save directory.
-[x] Pending battle and accepted-mission sessions survive app restarts.
-[x] Automatic bridge acknowledgement and graceful game shutdown.
-[x] 161 Python tests passing.
-[x] Generated three-ship fleet reached the native deployment screen without a
-    point-cost discrepancy.
-[ ] Full generated-fleet battle played through completion and report imported.
-[ ] Damage, loss, repair and mission rewards verified end-to-end.
-
 
 1. CAMPAIGN SHELL AND PERSISTENCE
 --------------------------------
@@ -117,8 +88,8 @@ CURRENT BASELINE ALREADY IN THE PROJECT
 [x] Integer-only credit amounts and consistent formatting.
 [x] Transaction ledger or audit trail for credits.
 [x] Atomic money changes for purchasing and selling.
-[ ] Atomic money changes for repair.
-[ ] Atomic money changes for rewards.
+[x] Atomic money changes for repair.
+[x] Atomic money changes for rewards.
 [x] Guard against negative credits.
 [x] Price data file separate from native point costs.
 [x] Per-item override support in the price table.
@@ -208,16 +179,6 @@ price and the point value one next to another
 [x] Show destroyed ships and lost components in the debrief.
 [x] Ensure a lost ship cannot appear in a later mission.
 
-4.4 Scope limits
-[x] No maintenance system.
-[x] No bankruptcy system.
-[x] No fail-state rescue system.
-[x] A dead campaign is acceptable.
-[-] Per-component condition tracking.
-[-] Salvage or recovery of components from destroyed ships.
-[-] Crew experience, injury or replacement systems.
-
-
 5. MISSIONS
 -----------
 5.1 Mission generation
@@ -296,7 +257,6 @@ price and the point value one next to another
 [x] Make completion idempotent if the report is imported more than once.
 [x] Define payout for a loss, draw, surrender or retreat (victory pays; anything else pays nothing).
 [x] Show the payout and consequences in the debrief.
-[ ] Return the player to Home after the debrief.
 
 
 6. BATTLE HANDOFF AND REPORT INTEGRATION
@@ -312,36 +272,6 @@ price and the point value one next to another
 [x] Apply report consequences only to selected ships.
 [x] Verify that unselected ships and their components are untouched.
 [x] Select the mission's map and scenario in the in-game skirmish lobby.
-[ ] Verify a generated-fleet battle through completion.
-[ ] Verify mission reward, damage, repair and permanent loss in one live loop.
-[~] Handle app or game restart while a mission is accepted or deploying.
-[ ] Handle a battle report arriving after the app has restarted.
-[ ] Verify the selected-fleet flow with every supported mission size.
-
-
-7. SCREENS AND UI
------------------
-[ ] Home dashboard.
-[ ] Home shows credits.
-[ ] Home shows fleet size and readiness.
-[ ] Home shows active mission.
-[ ] Home shows damaged and lost ships.
-[ ] Home shows the next recommended action.
-[ ] New Campaign screen.
-[ ] Load Campaign screen.
-[ ] Mission board screen.
-[ ] Mission detail and enemy fleet preview.
-[ ] Deployment/ship-selection screen.
-[ ] Repair screen or repair panel.
-[ ] Store/shipyard screen with filters and costs.
-[ ] Fleet roster screen with readiness.
-[ ] Debrief screen with payout, damage and losses.
-[ ] Clear navigation guards: no mission launch with damaged ships, no store
-    purchases during a pending refit, no mission regeneration while accepted.
-[ ] Progress/loading indicators for generation, save, load and battle startup.
-[ ] Actionable error messages for failed generation, save, load and handoff.
-[ ] Confirmation dialogs for permanent or expensive actions.
-
 
 8. INSTALLER AND DISTRIBUTION
 -----------------------------
@@ -357,111 +287,15 @@ price and the point value one next to another
 [x] Prompt to select the game path when it is missing.
 [x] Prompt to install, update or repair the bridge.
 [x] Show whether the bridge mod is enabled.
-[~] Handle game updates that require a bridge rebuild.
 [x] Bundle bridge files so users do not need the .NET SDK.
 [x] Keep bridge installation idempotent.
 [x] Verify write permissions before installing.
 [x] Portable data folder next to the executable (user-selected), with config written beside it.
 [x] Package a portable executable.
-[~] Publish the executable and bridge assets as GitHub Release assets (Publish Release.ps1 ready; publication is the maintainer's step).
 [x] Update README installation and first-run instructions.
-[~] Clean-install test on a machine without the project build outputs.
-
-
-9. VALIDATION AND TESTS
------------------------
-9.1 Existing checks
-[x] 60 Python tests pass.
-[x] Python compile checks pass.
-[x] git diff --check passes.
-[x] Bridge build succeeds.
-[x] Real catalogue export verified.
-[x] Generated fleet loads through the normal handoff to the deployment screen.
-
-9.2 New automated tests
-[ ] Campaign save/load round-trip with credits, roster and conditions.
-[ ] New campaign and load campaign state transitions.
-[ ] Price formula and per-item overrides.
-[ ] Missing-price fallback and validation.
-[ ] Hull purchase and component purchase transactions.
-[ ] Negative-credit guard.
-[x] Mission list generation.
-[x] Mission persistence across restart.
-[x] Accept, cancel and regenerate mission rules.
-[ ] Deployment selection validation.
-[ ] Damaged ships cannot be selected.
-[ ] Empty selection cannot be confirmed.
-[ ] Selected fleet export contains only selected ships.
-[ ] Report mapping ignores unselected ships.
-[ ] Damage application to selected ships.
-[ ] Destroyed ship removal.
-[ ] Installed-component loss on destruction.
-[ ] Repair gate and repair transaction.
-[ ] Mission reward applied exactly once.
-[ ] Duplicate report import does not duplicate rewards or losses.
-[ ] Installer path and version checks.
-
-9.3 Manual / live checks
-[ ] New campaign from a clean install.
-[ ] Load campaign and resume an accepted mission.
-[ ] Generate a mission list and inspect enemy fleet previews.
-[ ] Accept, cancel and regenerate missions.
-[ ] Start mission, select ships, confirm and deploy.
-[ ] Verify only selected ships appear in battle.
-[ ] Complete a generated-fleet battle and import the report.
-[ ] Verify reward, damage, repair and permanent loss.
-[ ] Verify unselected ships are untouched.
-[ ] Close the app mid-mission and recover state.
-[ ] Reinstall/update bridge from the app.
-[ ] Run a balance pass across many generated missions.
-
-
-10. OPEN DESIGN DECISIONS
--------------------------
-These do not block the campaign skeleton, but they must be settled before final tuning.
-
-[ ] Repair cost formula.
-[ ] Whether repair is instant or takes time.
-[ ] Whether repair consumes credits, spare components, or both.
-[ ] Starting credits.
-[ ] Starting fleet composition and starting loadouts.
-[ ] Whether a purchased hull starts empty or with a default loadout.
-[x] Mission reward formula: 100 credits per actual enemy point, minimum 5,000, rounded to 1,000.
-[ ] Payout on loss, draw, surrender or retreat.
-[x] Mission reroll: free while no mission is accepted; offers expire after 24 hours.
-[x] Cancelling an accepted mission has no credit penalty and returns the offer to the board.
-[ ] Whether selling or scrapping ships/components is allowed.
-[ ] Whether store stock is unlimited.
-[ ] Whether ammunition costs credits.
-[ ] Maximum number of save slots.
-[ ] Autosave frequency and backup retention.
-[ ] Mission difficulty and balance without deployment limits.
-[x] How enemy mission fleets scale, if at all, with the player's fleet.
-
-
-11. DEFERRED / OUT OF SCOPE FOR THIS POC
-----------------------------------------
-[-] Deployment limits.
-[-] Maintenance costs.
-[-] Bankruptcy, loans, insurance or fail-state rescue.
-[-] Missile launchers, hangars and craft.
-[-] Missile ammunition and ammunition logistics.
-[-] Per-component condition tracking.
-[-] Salvage from destroyed ships.
-[-] Crew experience, injury or replacement systems.
-[-] Pilot progression.
-[-] Multiplayer.
-[-] Campaign narrative, events or strategic map.
-[-] Mod support beyond the campaign bridge.
-[-] Full game-balance simulation tooling, unless needed for tuning.
-
 
 12. POST POC
 ------------
-This is a separate epic for longer-term work. It is not required for PoC acceptance
-and is distinct from the deferred/out-of-scope list above.
-
-12.1 Campaign over (moved from PoC 1.4)
 [ ] Detect that the campaign has no usable ships and cannot recover.
 [ ] Show a clear campaign-over state.
 [ ] Offer New Campaign / Load Campaign from that state.
@@ -469,20 +303,3 @@ and is distinct from the deferred/out-of-scope list above.
 [ ] Live-check a dead campaign and the campaign-over screen.
 [ ] Missile generation
 [ ] Ammunition costs
-
-
-SUGGESTED BUILD ORDER
----------------------
-1. Campaign save schema and campaign shell: New Campaign, Load Campaign, Home.
-2. Credits wallet, price table, starting state and transaction ledger.
-3. Hull ownership, component purchasing and store filters.
-4. Damage persistence, repair gate and permanent-loss reconciliation.
-5. Mission model, mission list, enemy preview, accept/cancel/regenerate.
-6. Deployment screen and selected-fleet export.
-7. Scoped report import, reward payout and mission completion.
-8. Debrief payout, damage, loss and repair consequences.
-9. First-run installer, launch-time checks and release packaging.
-10. Automated tests, live end-to-end validation and balance pass.
-
-Post-PoC follow-up:
-- Campaign-over detection, screen and live validation (section 12.1).
